@@ -8,7 +8,10 @@ inputs:
       SECRET_NAME as ENV_NAME; a bare "SECRET_NAME" exports it under its own name.
     required: true
   secrets_json:
-    description: "Pass toJSON(secrets) from the calling workflow; composite actions can't read the secrets context"
+    description: |
+      Pass toJSON(secrets) from the calling workflow; composite actions can't read the secrets
+      context. A `secrets_json` entry in it (a JSON object passed by a cross-owner caller) is
+      merged underneath the other secrets.
     required: true
 
 runs:
@@ -19,6 +22,8 @@ runs:
         ALL_SECRETS: ${{ inputs.secrets_json }}
         MAPPINGS: ${{ inputs.mappings }}
       run: |
+        ALL_SECRETS="$(jq -c '(.secrets_json // "{}" | fromjson) + del(.secrets_json)' <<<"$ALL_SECRETS")"
+
         while IFS= read -r line || [ -n "$line" ]; do
           line="$(printf '%s' "$line" | tr -d '[:space:]')"
           [ -z "$line" ] && continue

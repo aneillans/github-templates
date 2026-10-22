@@ -41,7 +41,8 @@ on:
         description: |
           Secret overrides, one helm.path=SECRET_NAME per line. Written to a temporary values
           file rather than the command line. Environment secrets resolve when `environment` is
-          set; repo secrets need the caller to pass `secrets: inherit`.
+          set; repo secrets need the caller to pass `secrets: inherit`, or the `secrets_json`
+          secret from another owner.
         required: false
         type: string
         default: ""
@@ -63,6 +64,13 @@ on:
         required: false
         type: string
         default: "5m"
+    secrets:
+      secrets_json:
+        description: |
+          JSON object of the caller's secrets: pass toJSON(secrets) in an expression. Needed when the caller
+          is outside this repo's owner, where `secrets: inherit` passes nothing. Secrets the job
+          can read directly, such as environment secrets, take precedence.
+        required: false
 
 permissions:
   contents: read
@@ -93,6 +101,8 @@ jobs:
           SECRET_VALUES: ${{ inputs.secret_values }}
           VAR_VALUES: ${{ inputs.var_values }}
         run: |
+          ALL_SECRETS="$(jq -c '(.secrets_json // "{}" | fromjson) + del(.secrets_json)' <<<"$ALL_SECRETS")"
+
           # secret and variable names are case-insensitive in GitHub
           lookup() {
             jq -er --arg k "${2^^}" 'with_entries(.key |= ascii_upcase) | .[$k] // empty' <<<"$1"

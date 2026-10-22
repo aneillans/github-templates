@@ -34,7 +34,7 @@ one-line diff in the calling repo; github-templates never changes.
   cloudflare-worker-deploy.yml  wrangler deploy, one target
 actions/
   setup-dotnet-cache/           setup-dotnet + NuGet cache, used by the .NET templates
-  setup-node-cache/             setup-node + npm cache, used by the Node templates
+  setup-node-cache/             setup-node + optional npm cache, used by the Node templates
   export-secrets/               named secrets -> masked env vars, used by dotnet-ci and terraform-deploy
 tests/
   terraform/     random_pet + terraform_data, S3 remote state in the github-templates bucket on storage.neillans.co.uk
@@ -107,11 +107,21 @@ jobs:
 
 The template only sees what is listed.
 
-### Name-mapped secrets (`secrets: inherit`)
+### Name-mapped secrets
 
 Some templates need an open-ended set of secrets, so the caller names them in
-an input and passes `secrets: inherit`. The template looks each name up in its
-own `secrets` context.
+an input and makes its secrets available to the template, which looks each
+name up. How the caller does that depends on who owns the calling repo:
+
+- Same owner as this repo (`aneillans/*`): `secrets: inherit`.
+- Any other owner (e.g. `PostyFox/*`): GitHub only honours `secrets: inherit`
+  within one org or enterprise, and silently passes nothing otherwise. Pass
+  the `secrets_json` secret instead:
+
+  ```yaml
+      secrets:
+        secrets_json: ${{ toJSON(secrets) }}
+  ```
 
 | Template | Input | Format, one per line | Becomes |
 |---|---|---|---|
@@ -154,8 +164,8 @@ jobs:
 - Names are case-insensitive, as in GitHub. Whitespace in a line is stripped.
 - A name that can't be found fails the job; it is never exported or rendered
   as empty. Leave optional secrets out of the mapping.
-- `secrets: inherit` hands the template every repo and org secret the caller
-  can see, not just the mapped ones. 
+- Both forms hand the template every repo and org secret the caller can see,
+  not just the mapped ones.
 
 ### Environment secrets
 
@@ -164,8 +174,9 @@ can't read environment-scoped secrets and pass them on. The template job runs
 under the environment and reads them itself. Templates with an `environment`
 input (terraform-deploy, cloudflare-worker-deploy, helm-deploy) support this:
 
-- Name-mapped inputs resolve environment secrets and variables directly. Repo
-  and org secrets in the same mapping still need `secrets: inherit`.
+- Name-mapped inputs resolve environment secrets and variables directly, and
+  take them over a `secrets_json` entry of the same name. Repo and org secrets
+  in the same mapping still need `secrets: inherit` or `secrets_json`.
 - Explicit secrets must be repo or org secrets, because the caller resolves
   them outside the environment.
 - The environment's approvals and deployment branch policies gate the template
