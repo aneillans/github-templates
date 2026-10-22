@@ -36,6 +36,8 @@ actions/
   setup-dotnet-cache/           setup-dotnet + NuGet cache, used by the .NET templates
   setup-node-cache/             setup-node + optional npm cache, used by the Node templates
   export-secrets/               named secrets -> masked env vars, used by dotnet-ci and terraform-deploy
+  resolve-deploy/               pick and verify the commit a deploy job ships
+  tag-release/                  tag a deployed commit and publish a GitHub Release
 tests/
   terraform/     random_pet + terraform_data, S3 remote state in the github-templates bucket on storage.neillans.co.uk
   node-app/      HTTP server with node:test tests and a Dockerfile
@@ -57,8 +59,69 @@ uses it by local path.
 - Node: `node-ci`, a `wrangler deploy --dry-run`, and amd64+arm64 image
   builds through both the QEMU and native-runner paths (no push), with
   build args and a build secret on the QEMU path.
-- Helm: no self-test; it needs a cluster.
+- Helm, resolve-deploy, tag-release: no self-test; they need a cluster, a
+  registry holding SHA-tagged images, or write access to create releases.
 - .NET: build, test and pack. Nothing is published.
+
+## Build and deploy conventions
+
+The deploy actions rely on two conventions set at build time:
+
+- Every image is tagged with the full commit SHA. docker-build-push adds this
+  tag by default, alongside `sha-<short>`, the branch and `latest`. Deploys
+  always use the full-SHA tag, which never moves.
+- The build version is baked into the image as an environment variable, e.g.
+  `ARG VERSION` then `ENV APP_VERSION=$VERSION` in the final stage. Use semver,
+  optionally with `+<short sha>` build metadata.
+
+A deploy workflow then needs no record of builds beyond the registry: an image
+tagged with a commit's SHA exists only if the build for that commit passed.
+
+```yaml
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - id: resolve
+        uses: aneillans/github-templates/actions/resolve-deploy@v1
+        with:
+          images: |
+            ghcr.io/my-org/my-app-api
+            ghcr.io/my-org/my-app-worker
+          run_sha: ${{ github.event.workflow_run.head_sha }}
+          sha: ${{ inputs.sha }}
+          # production only takes commits on main
+          require_branch: ${{ inputs.environment == 'production' && 'main' || '' }}
+          version_env: APP_VERSION
+          registry: ghcr.io
+          registry_username: ${{ github.actor }}
+          registry_password: ${{ secrets.GITHUB_TOKEN }}
+
+  # ... deploy jobs use needs.resolve.outputs.sha as the image tag ...
+
+  release:
+    needs: [resolve, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: aneillans/github-templates/actions/tag-release@v1
+        with:
+          sha: ${{ needs.resolve.outputs.sha }}
+          version: ${{ needs.resolve.outputs.version }}
+```
+
+resolve-deploy takes the commit from `run_sha`, then `sha`, then the newest
+commit on `search_branch` (default `main`) that has images. It fails if any
+listed image is missing for that commit, or if the commit isn't in
+`require_branch`'s history. tag-release drops `+build` metadata, so
+`1.4.3+cf25037` becomes `v1.4.3`, and fails if the tag already exists.
 
 ## Versioning
 
