@@ -26,11 +26,18 @@ on:
       env_secrets:
         description: |
           Newline-separated secrets to export as environment variables for restore/build/test,
-          e.g. a build-time licence key. Same format as terraform-deploy's env_secrets; caller
-          must pass `secrets: inherit`.
+          e.g. a build-time licence key. Same format as terraform-deploy's env_secrets. The caller
+          passes `secrets: inherit`, or the `secrets_json` secret from another owner.
         required: false
         type: string
         default: ""
+    secrets:
+      secrets_json:
+        description: |
+          JSON object of the caller's secrets: pass toJSON(secrets) in an expression. Needed when the caller
+          is outside this repo's owner, where `secrets: inherit` passes nothing. Secrets the job
+          can read directly, such as environment secrets, take precedence.
+        required: false
 
 permissions:
   contents: read

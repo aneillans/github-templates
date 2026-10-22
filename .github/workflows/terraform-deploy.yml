@@ -41,6 +41,12 @@ on:
       backend_hcl:
         description: Contents to write to backend.hcl before running init
         required: false
+      secrets_json:
+        description: |
+          JSON object of the caller's secrets: pass toJSON(secrets) in an expression. Needed when the caller
+          is outside this repo's owner, where `secrets: inherit` passes nothing. Secrets the job
+          can read directly, such as environment secrets, take precedence.
+        required: false
 
 permissions:
   contents: read

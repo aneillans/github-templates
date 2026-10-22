@@ -47,6 +47,16 @@ jobs:
       working_directory: tests/node-app
       build_command: ""
 
+  # setup-node fails outright when caching is on and there is no lockfile
+  no-cache:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./actions/setup-node-cache
+        with:
+          cache: ""
+      - run: node --version
+
   worker-dry-run:
     uses: ./.github/workflows/cloudflare-worker-deploy.yml
     with:
