@@ -1,0 +1,50 @@
+name: Tag release
+description: |
+  Tags a deployed commit with its semver and publishes a GitHub Release with generated notes.
+  Build metadata (+abc1234) is dropped from the tag. Needs contents: write.
+
+inputs:
+  sha:
+    description: Commit to tag
+    required: true
+  version:
+    description: Semver, optionally with a pre-release and/or +build suffix, e.g. 1.4.3+cf25037
+    required: true
+  tag_prefix:
+    required: false
+    default: "v"
+  github_token:
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  tag:
+    value: ${{ steps.release.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    - id: release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        SHA: ${{ inputs.sha }}
+        VERSION: ${{ inputs.version }}
+        TAG_PREFIX: ${{ inputs.tag_prefix }}
+      run: |
+        version="${VERSION%%+*}"
+        [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+          || { echo "::error::Not a semver version: '$VERSION'"; exit 1; }
+        tag="$TAG_PREFIX$version"
+
+        if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+          echo "::error::$tag already exists"
+          exit 1
+        fi
+
+        prerelease=()
+        [[ "$version" == *-* ]] && prerelease=(--prerelease)
+        # creates the tag on $SHA as part of the release
+        gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$SHA" \
+          --title "$tag" --generate-notes "${prerelease[@]}"
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"

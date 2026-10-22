@@ -1,0 +1,126 @@
+name: Resolve deploy commit
+description: |
+  Picks the commit to deploy and proves it was built: every image must exist tagged with the full
+  commit SHA, which docker-build-push adds by default. Optionally restricts the commit to one
+  branch's history and reads the version baked into the image.
+
+inputs:
+  images:
+    description: Image references without a tag, one per line. The first is used for the version and default-commit search.
+    required: true
+  run_sha:
+    description: Commit from a triggering workflow_run (github.event.workflow_run.head_sha); wins over sha
+    required: false
+    default: ""
+  sha:
+    description: Commit requested by hand, full or abbreviated. Empty picks the newest built commit on search_branch.
+    required: false
+    default: ""
+  require_branch:
+    description: Fail unless the commit is in this branch's history, e.g. main for production. Empty allows any commit.
+    required: false
+    default: ""
+  search_branch:
+    description: Branch searched for the newest built commit when no SHA is given
+    required: false
+    default: "main"
+  search_depth:
+    description: How many first-parent commits of search_branch to try
+    required: false
+    default: "20"
+  version_env:
+    description: Environment variable in the image config holding the build version; empty skips the version
+    required: false
+    default: ""
+  registry:
+    description: Registry to log in to; empty skips login (public images)
+    required: false
+    default: ""
+  registry_username:
+    required: false
+    default: ""
+  registry_password:
+    required: false
+    default: ""
+
+outputs:
+  sha:
+    description: Full commit SHA to deploy
+    value: ${{ steps.resolve.outputs.sha }}
+  version:
+    description: Value of version_env in the first image, or empty
+    value: ${{ steps.resolve.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    # full history for rev-parse, rev-list and the branch check
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+        path: .resolve-deploy
+
+    - if: inputs.registry != ''
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.registry_username }}
+        password: ${{ inputs.registry_password }}
+
+    - id: resolve
+      shell: bash
+      working-directory: .resolve-deploy
+      env:
+        IMAGES: ${{ inputs.images }}
+        RUN_SHA: ${{ inputs.run_sha }}
+        INPUT_SHA: ${{ inputs.sha }}
+        REQUIRE_BRANCH: ${{ inputs.require_branch }}
+        SEARCH_BRANCH: ${{ inputs.search_branch }}
+        SEARCH_DEPTH: ${{ inputs.search_depth }}
+        VERSION_ENV: ${{ inputs.version_env }}
+      run: |
+        mapfile -t images < <(printf '%s\n' "$IMAGES" | tr -d '[:blank:]' | sed '/^$/d')
+        [ "${#images[@]}" -gt 0 ] || { echo "::error::No images given"; exit 1; }
+        built() { docker buildx imagetools inspect "${images[0]}:$1" >/dev/null 2>&1; }
+
+        if [ -n "$RUN_SHA" ]; then
+          sha="$RUN_SHA"
+        elif [ -n "$INPUT_SHA" ]; then
+          [[ "$INPUT_SHA" =~ ^[0-9a-fA-F]{7,40}$ ]] || { echo "::error::Not a commit SHA: $INPUT_SHA"; exit 1; }
+          sha="$(git rev-parse --verify "${INPUT_SHA}^{commit}")" \
+            || { echo "::error::Unknown commit $INPUT_SHA"; exit 1; }
+        else
+          sha=""
+          for candidate in $(git rev-list --first-parent -n "$SEARCH_DEPTH" "origin/$SEARCH_BRANCH"); do
+            if built "$candidate"; then sha="$candidate"; break; fi
+          done
+          [ -n "$sha" ] || { echo "::error::No built commit in the last $SEARCH_DEPTH on $SEARCH_BRANCH"; exit 1; }
+        fi
+
+        if [ -n "$REQUIRE_BRANCH" ] && ! git merge-base --is-ancestor "$sha" "origin/$REQUIRE_BRANCH"; then
+          echo "::error::$sha is not on $REQUIRE_BRANCH"
+          exit 1
+        fi
+
+        for image in "${images[@]}"; do
+          docker buildx imagetools inspect "$image:$sha" >/dev/null \
+            || { echo "::error::Missing image $image:$sha"; exit 1; }
+        done
+
+        version=""
+        if [ -n "$VERSION_ENV" ]; then
+          # .Image is one config for a single-platform image, or a map of platform -> config
+          version="$(docker buildx imagetools inspect "${images[0]}:$sha" --format '{{json .Image}}' \
+            | jq -r --arg k "$VERSION_ENV=" '
+                (if has("config") then .config else (to_entries[0].value.config) end).Env // []
+                | map(select(startswith($k)) | ltrimstr($k)) | first // empty')"
+          [ -n "$version" ] || echo "::warning::$VERSION_ENV not set in ${images[0]}:$sha"
+        fi
+
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "Deploying $sha${version:+ ($version)}"
+
+    - if: always()
+      shell: bash
+      run: rm -rf .resolve-deploy
