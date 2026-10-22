@@ -1,0 +1,59 @@
+name: Cloudflare Worker Deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      wrangler_command:
+        description: "Full wrangler command, e.g. 'deploy' or 'deploy --env terrencethefox'"
+        required: false
+        type: string
+        default: "deploy"
+      working_directory:
+        required: false
+        type: string
+        default: "."
+      node_version:
+        required: false
+        type: string
+        default: "24"
+      environment:
+        description: GitHub Environment to run under (for environment-scoped secrets)
+        required: false
+        type: string
+    secrets:
+      cloudflare_api_token:
+        required: true
+      cloudflare_account_id:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: aneillans/github-templates/actions/setup-node-cache@main
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.cloudflare_api_token }}
+          accountId: ${{ secrets.cloudflare_account_id }}
+          command: ${{ inputs.wrangler_command }}
+          workingDirectory: ${{ inputs.working_directory }}

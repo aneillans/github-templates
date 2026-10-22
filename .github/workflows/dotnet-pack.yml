@@ -1,0 +1,65 @@
+name: .NET Pack (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: csproj to pack
+        required: true
+        type: string
+      package_version:
+        required: true
+        type: string
+      artifact_name:
+        description: Name for the uploaded nupkg artifact (must be a valid artifact name, no slashes)
+        required: true
+        type: string
+      dotnet_version:
+        required: false
+        type: string
+        default: "10.0.x"
+      configuration:
+        required: false
+        type: string
+        default: "Release"
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: aneillans/github-templates/actions/setup-dotnet-cache@main
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Restore
+        run: dotnet restore ${{ inputs.project }}
+
+      - name: Build
+        run: dotnet build ${{ inputs.project }} --configuration ${{ inputs.configuration }} --no-restore
+
+      - name: Pack
+        run: |
+          OUT_DIR=$(dirname "${{ inputs.project }}")
+          dotnet pack ${{ inputs.project }} \
+            --configuration ${{ inputs.configuration }} \
+            --no-build \
+            -p:PackageVersion=${{ inputs.package_version }} \
+            -o "$PWD/artifacts/$OUT_DIR"
+
+      - name: Upload nupkg artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: artifacts/**/*.nupkg
+          if-no-files-found: error

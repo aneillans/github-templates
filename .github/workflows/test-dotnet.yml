@@ -1,0 +1,39 @@
+name: Test .NET templates
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/dotnet-*.yml"
+      - ".github/workflows/test-dotnet.yml"
+      - "actions/setup-dotnet-cache/**"
+      - "tests/dotnet/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/dotnet-*.yml"
+      - ".github/workflows/test-dotnet.yml"
+      - "actions/setup-dotnet-cache/**"
+      - "tests/dotnet/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    uses: ./.github/workflows/dotnet-ci.yml
+    with:
+      project: tests/dotnet/TemplateTest.slnx
+
+  pack:
+    needs: ci
+    uses: ./.github/workflows/dotnet-pack.yml
+    with:
+      project: tests/dotnet/src/TemplateTest/TemplateTest.csproj
+      package_version: 0.0.0-ci.${{ github.run_number }}
+      artifact_name: test-dotnet-nupkg

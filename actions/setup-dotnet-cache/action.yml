@@ -1,0 +1,21 @@
+name: Setup .NET with NuGet cache
+description: Installs the .NET SDK and caches ~/.nuget/packages keyed on packages.lock.json
+
+inputs:
+  dotnet-version:
+    required: false
+    default: "10.0.x"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - uses: actions/cache@v6
+      with:
+        path: ~/.nuget/packages
+        key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-nuget-

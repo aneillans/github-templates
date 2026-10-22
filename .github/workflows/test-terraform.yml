@@ -1,0 +1,53 @@
+name: Test Terraform templates
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/terraform-*.yml"
+      - ".github/workflows/test-terraform.yml"
+      - "tests/terraform/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/terraform-*.yml"
+      - ".github/workflows/test-terraform.yml"
+      - "tests/terraform/**"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Terraform action to run against the test state
+        required: true
+        type: choice
+        default: plan
+        options:
+          - plan
+          - apply
+
+permissions:
+  contents: read
+
+# one run at a time against the shared test state
+concurrency:
+  group: test-terraform
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    uses: ./.github/workflows/terraform-validate.yml
+    with:
+      working_directory: tests/terraform
+
+  deploy:
+    needs: validate
+    # fork PRs get no secrets, so they can't reach the state store
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/terraform-deploy.yml
+    with:
+      working_directory: tests/terraform
+      action: ${{ inputs.action || 'plan' }}
+      artifact_name: test-terraform-tfplan
+      env_secrets: |
+        AWS_ACCESS_KEY_ID=TF_STATE_ACCESS_KEY_ID
+        AWS_SECRET_ACCESS_KEY=TF_STATE_SECRET_ACCESS_KEY
+    secrets: inherit

@@ -1,0 +1,48 @@
+name: Terraform Validate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: Terraform root to validate, relative to repo root
+        required: true
+        type: string
+      terraform_version:
+        required: false
+        type: string
+        default: "1.17.0"
+      check_format:
+        description: Fail if terraform fmt would change any files
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Check formatting
+        if: inputs.check_format
+        run: terraform fmt -check -recursive "$GITHUB_WORKSPACE/${{ inputs.working_directory }}"
+
+      # validate never reads state, so skip the backend and its credentials
+      - name: Initialize Terraform
+        run: terraform init -input=false -backend=false
+
+      - name: Validate configuration
+        run: terraform validate

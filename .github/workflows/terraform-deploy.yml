@@ -1,0 +1,143 @@
+name: Terraform Deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: Terraform root to deploy, relative to repo root
+        required: true
+        type: string
+      action:
+        description: "plan or apply"
+        required: true
+        type: string
+      terraform_version:
+        required: false
+        type: string
+        default: "1.17.0"
+      environment:
+        description: GitHub Environment to run under (for approvals + environment-scoped secrets)
+        required: false
+        type: string
+      artifact_name:
+        description: Name for the uploaded plan artifact when action=plan
+        required: false
+        type: string
+        default: tfplan
+      env_secrets:
+        description: |
+          Newline-separated secrets to export as environment variables, one per line.
+          "ENV_NAME=SECRET_NAME" exports SECRET_NAME as ENV_NAME; a bare "SECRET_NAME"
+          exports it under its own name. Use TF_VAR_<name> to feed a Terraform variable,
+          or a provider's own env var (e.g. CLOUDFLARE_API_TOKEN). Caller must pass
+          `secrets: inherit` so the named secrets are visible here.
+        required: false
+        type: string
+        default: ""
+    secrets:
+      tfvars_json:
+        description: Contents to write to terraform.tfvars.json before running
+        required: false
+      backend_hcl:
+        description: Contents to write to backend.hcl before running init
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Write tfvars file
+        env:
+          TFVARS_JSON: ${{ secrets.tfvars_json }}
+        run: |
+          if [ -n "$TFVARS_JSON" ]; then
+            printf '%s' "$TFVARS_JSON" > terraform.tfvars.json
+          fi
+
+      - name: Write backend config
+        env:
+          BACKEND_CONFIG: ${{ secrets.backend_hcl }}
+        run: |
+          if [ -n "$BACKEND_CONFIG" ]; then
+            printf '%s' "$BACKEND_CONFIG" > backend.hcl
+          fi
+
+      - name: Export secrets as environment variables
+        if: inputs.env_secrets != ''
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+          MAPPINGS: ${{ inputs.env_secrets }}
+        run: |
+          while IFS= read -r line || [ -n "$line" ]; do
+            line="$(printf '%s' "$line" | tr -d '[:space:]')"
+            [ -z "$line" ] && continue
+
+            name="${line%%=*}"
+            source="${line#*=}"
+            if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+              echo "Invalid environment variable name: $name" >&2
+              exit 1
+            fi
+
+            # secret names are case-insensitive in GitHub
+            source="${source^^}"
+            if ! jq -e --arg k "$source" 'with_entries(.key |= ascii_upcase) | has($k)' <<<"$ALL_SECRETS" >/dev/null; then
+              echo "Secret $source not found. Is the caller using 'secrets: inherit'?" >&2
+              exit 1
+            fi
+            value="$(jq -r --arg k "$source" 'with_entries(.key |= ascii_upcase) | .[$k]' <<<"$ALL_SECRETS")"
+
+            while IFS= read -r part; do
+              [ -n "$part" ] && echo "::add-mask::$part"
+            done <<<"$value"
+
+            delimiter="EOF_$(openssl rand -hex 8)"
+            printf '%s<<%s\n%s\n%s\n' "$name" "$delimiter" "$value" "$delimiter" >> "$GITHUB_ENV"
+          done <<<"$MAPPINGS"
+
+      - name: Initialize Terraform
+        run: |
+          if [ -f backend.hcl ]; then
+            terraform init -input=false -reconfigure -backend-config=backend.hcl
+          else
+            terraform init -input=false
+          fi
+
+          # .terraform/terraform.tfstate only exists when a backend is configured.
+          # Applying against local state on an ephemeral runner loses the state.
+          if [ "${{ inputs.action }}" = "apply" ] && [ ! -f .terraform/terraform.tfstate ]; then
+            echo "Apply requires a configured backend (backend block or backend_hcl secret)." >&2
+            exit 1
+          fi
+
+      - name: Run Terraform
+        run: |
+          if [ "${{ inputs.action }}" = "apply" ]; then
+            terraform apply -input=false -auto-approve
+            exit 0
+          fi
+
+          terraform plan -input=false -out=tfplan
+
+      - name: Upload plan artifact
+        if: inputs.action == 'plan'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.working_directory }}/tfplan

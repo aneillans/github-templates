@@ -1,0 +1,297 @@
+name: Docker Build and Push (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        description: Container registry host, e.g. the PROGET_SERVER repository variable
+        required: true
+        type: string
+      image_name:
+        description: "Image path within the registry, e.g. docker/mail-verifier"
+        required: true
+        type: string
+      dockerfile:
+        required: false
+        type: string
+        default: "./Dockerfile"
+      context:
+        required: false
+        type: string
+        default: "."
+      platforms:
+        description: Comma-separated target platforms, e.g. "linux/amd64,linux/arm64"
+        required: false
+        type: string
+        default: "linux/amd64"
+      push:
+        description: Set false for a build-only smoke test with no registry login
+        required: false
+        type: boolean
+        default: true
+      provenance:
+        required: false
+        type: boolean
+        default: false
+      sbom:
+        required: false
+        type: boolean
+        default: false
+      registry_username:
+        required: false
+        type: string
+        default: "api"
+      extra_tags:
+        description: Additional docker/metadata-action tag rules, one per line
+        required: false
+        type: string
+        default: ""
+      native_runners:
+        description: |
+          Build each platform as its own job on a runner of that architecture, then merge
+          the results into one manifest list. Faster than QEMU for builds that compile on
+          the target architecture. Platforms without a matching runner fall back to
+          amd64_runner with QEMU.
+        required: false
+        type: boolean
+        default: false
+      amd64_runner:
+        description: Runner label for linux/amd64 builds when native_runners is true
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      arm64_runner:
+        description: Runner label for linux/arm64 builds when native_runners is true
+        required: false
+        type: string
+        default: "ubuntu-24.04-arm"
+    secrets:
+      registry_password:
+        description: Required unless push is false
+        required: false
+    outputs:
+      digest:
+        description: Digest of the built image (manifest list digest for multi-platform builds)
+        value: ${{ jobs.build.outputs.digest || jobs.merge.outputs.digest }}
+      tags:
+        description: Tags applied to the image, newline-separated
+        value: ${{ jobs.build.outputs.tags || jobs.prepare.outputs.tags }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: ${{ !inputs.native_runners }}
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # emulation for any platform the runner can't execute natively
+      - name: Set up QEMU
+        if: inputs.platforms != 'linux/amd64'
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: ${{ inputs.platforms }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to registry
+        if: inputs.push
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ inputs.registry_username }}
+          password: ${{ secrets.registry_password }}
+
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ inputs.registry }}/${{ inputs.image_name }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=ref,event=tag
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+            ${{ inputs.extra_tags }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: ${{ inputs.push }}
+          platforms: ${{ inputs.platforms }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: ${{ inputs.provenance }}
+          sbom: ${{ inputs.sbom }}
+          # scoped per image so several images built from one repo don't evict each other
+          cache-from: type=gha,scope=${{ inputs.image_name }}
+          cache-to: type=gha,scope=${{ inputs.image_name }},mode=max
+
+  # native_runners path: prepare -> build-native (one job per platform) -> merge
+
+  prepare:
+    if: inputs.native_runners
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      artifact_prefix: ${{ steps.matrix.outputs.artifact_prefix }}
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+      metadata_json: ${{ steps.meta.outputs.json }}
+    steps:
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ inputs.registry }}/${{ inputs.image_name }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=ref,event=tag
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+            ${{ inputs.extra_tags }}
+
+      - name: Build platform matrix
+        id: matrix
+        shell: bash
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+          IMAGE_NAME: ${{ inputs.image_name }}
+          AMD64_RUNNER: ${{ inputs.amd64_runner }}
+          ARM64_RUNNER: ${{ inputs.arm64_runner }}
+        run: |
+          matrix="$(jq -cn \
+            --arg platforms "$PLATFORMS" \
+            --arg amd64 "$AMD64_RUNNER" \
+            --arg arm64 "$ARM64_RUNNER" '
+            $platforms | split(",") | map(gsub("\\s"; "")) | map(select(. != "")) | map({
+              platform: .,
+              slug: gsub("/"; "-"),
+              runner: (if . == "linux/amd64" then $amd64 elif . == "linux/arm64" then $arm64 else $amd64 end),
+              qemu: (. != "linux/amd64" and . != "linux/arm64")
+            }) | {include: .}')"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          # artifact names must be unique per run, and one run may build several images
+          echo "artifact_prefix=digests-${IMAGE_NAME//\//-}" >> "$GITHUB_OUTPUT"
+
+  build-native:
+    needs: prepare
+    strategy:
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: ${{ matrix.platform }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to registry
+        if: inputs.push
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ inputs.registry_username }}
+          password: ${{ secrets.registry_password }}
+
+      # pushes untagged by digest; the merge job applies tags to the combined manifest list
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          labels: ${{ needs.prepare.outputs.labels }}
+          provenance: ${{ inputs.provenance }}
+          sbom: ${{ inputs.sbom }}
+          outputs: ${{ inputs.push && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', inputs.registry, inputs.image_name) || 'type=cacheonly' }}
+          cache-from: type=gha,scope=${{ inputs.image_name }}-${{ matrix.slug }}
+          cache-to: type=gha,scope=${{ inputs.image_name }}-${{ matrix.slug }},mode=max
+
+      - name: Export digest
+        if: inputs.push
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: inputs.push
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.prepare.outputs.artifact_prefix }}-${{ matrix.slug }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    if: inputs.native_runners && inputs.push
+    needs: [prepare, build-native]
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.inspect.outputs.digest }}
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ needs.prepare.outputs.artifact_prefix }}-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ inputs.registry_username }}
+          password: ${{ secrets.registry_password }}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        shell: bash
+        env:
+          IMAGE: ${{ inputs.registry }}/${{ inputs.image_name }}
+          METADATA_JSON: ${{ needs.prepare.outputs.metadata_json }}
+        run: |
+          mapfile -t tag_args < <(jq -r '.tags[] | "-t", .' <<<"$METADATA_JSON")
+          sources=()
+          for digest in *; do
+            sources+=("$IMAGE@sha256:$digest")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+
+      - name: Inspect image
+        id: inspect
+        shell: bash
+        env:
+          IMAGE: ${{ inputs.registry }}/${{ inputs.image_name }}
+          METADATA_JSON: ${{ needs.prepare.outputs.metadata_json }}
+        run: |
+          tag="$(jq -r '.tags[0]' <<<"$METADATA_JSON")"
+          docker buildx imagetools inspect "$tag"
+          digest="$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r '.digest')"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,58 @@
+name: .NET NuGet Publish (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      feed_url:
+        description: NuGet feed URL, e.g. the PROGET_URL repository variable
+        required: true
+        type: string
+      artifact_pattern:
+        description: actions/download-artifact glob matching the nupkg artifacts to publish
+        required: false
+        type: string
+        default: "nupkg-*"
+      dotnet_version:
+        required: false
+        type: string
+        default: "10.0.x"
+    secrets:
+      feed_api_key:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Download nupkg artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ inputs.artifact_pattern }}
+          path: downloads
+          merge-multiple: true
+
+      - name: List packages
+        run: find downloads -name '*.nupkg' -print
+
+      - name: Push packages
+        env:
+          FEED_API_KEY: ${{ secrets.feed_api_key }}
+        run: |
+          find downloads -name '*.nupkg' -print0 | while IFS= read -r -d '' pkg; do
+            echo "Publishing $pkg"
+            dotnet nuget push "$pkg" \
+              --source "${{ inputs.feed_url }}" \
+              --api-key "$FEED_API_KEY" \
+              --skip-duplicate
+          done

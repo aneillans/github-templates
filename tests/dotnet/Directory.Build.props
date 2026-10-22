@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- packages.lock.json is the cache key in actions/setup-dotnet-cache -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
+  </PropertyGroup>
+</Project>

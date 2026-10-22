@@ -1,0 +1,68 @@
+name: .NET CI (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Solution or project file to restore/build/test
+        required: true
+        type: string
+      dotnet_version:
+        required: false
+        type: string
+        default: "10.0.x"
+      configuration:
+        required: false
+        type: string
+        default: "Release"
+      run_tests:
+        required: false
+        type: boolean
+        default: true
+      publish_test_results:
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: aneillans/github-templates/actions/setup-dotnet-cache@main
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Restore
+        run: dotnet restore ${{ inputs.project }}
+
+      - name: Build
+        run: dotnet build ${{ inputs.project }} --configuration ${{ inputs.configuration }} --no-restore
+
+      - name: Run tests
+        if: inputs.run_tests
+        run: dotnet test ${{ inputs.project }} --configuration ${{ inputs.configuration }} --no-build --logger "trx;LogFileName=test-results.trx"
+
+      - name: Publish test results
+        if: ${{ always() && inputs.run_tests && inputs.publish_test_results }}
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: '**/TestResults/*.trx'
+
+      - name: Upload TRX results artifact
+        if: ${{ inputs.run_tests && github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-trx
+          path: '**/TestResults/*.trx'

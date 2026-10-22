@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>Aneillans.TemplateTest</PackageId>
+    <Authors>aneillans</Authors>
+    <Description>Test package for the github-templates .NET workflows.</Description>
+  </PropertyGroup>
+
+</Project>

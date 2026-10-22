@@ -1,0 +1,73 @@
+name: Test Node templates
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cloudflare-worker-deploy.yml"
+      - ".github/workflows/docker-build-push.yml"
+      - ".github/workflows/test-node.yml"
+      - "actions/setup-node-cache/**"
+      - "tests/node-app/**"
+      - "tests/node-worker/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/cloudflare-worker-deploy.yml"
+      - ".github/workflows/docker-build-push.yml"
+      - ".github/workflows/test-node.yml"
+      - "actions/setup-node-cache/**"
+      - "tests/node-app/**"
+      - "tests/node-worker/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # exercises the branch copy of the composite action; templates use @main
+  app-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests/node-app
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./actions/setup-node-cache
+        with:
+          cache-dependency-path: tests/node-app/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  worker-dry-run:
+    uses: ./.github/workflows/cloudflare-worker-deploy.yml
+    with:
+      working_directory: tests/node-worker
+      wrangler_command: deploy --dry-run --outdir dist
+    # --dry-run never calls the API, so placeholders are enough
+    secrets:
+      cloudflare_api_token: dry-run
+      cloudflare_account_id: dry-run
+
+  docker-qemu:
+    needs: app-test
+    uses: ./.github/workflows/docker-build-push.yml
+    with:
+      registry: local
+      image_name: template-test-app
+      context: tests/node-app
+      dockerfile: tests/node-app/Dockerfile
+      platforms: linux/amd64,linux/arm64
+      push: false
+
+  docker-native:
+    needs: app-test
+    uses: ./.github/workflows/docker-build-push.yml
+    with:
+      registry: local
+      image_name: template-test-app
+      context: tests/node-app
+      dockerfile: tests/node-app/Dockerfile
+      platforms: linux/amd64,linux/arm64
+      push: false
+      native_runners: true
