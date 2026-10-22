@@ -80,36 +80,10 @@ jobs:
 
       - name: Export secrets as environment variables
         if: inputs.env_secrets != ''
-        env:
-          ALL_SECRETS: ${{ toJSON(secrets) }}
-          MAPPINGS: ${{ inputs.env_secrets }}
-        run: |
-          while IFS= read -r line || [ -n "$line" ]; do
-            line="$(printf '%s' "$line" | tr -d '[:space:]')"
-            [ -z "$line" ] && continue
-
-            name="${line%%=*}"
-            source="${line#*=}"
-            if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-              echo "Invalid environment variable name: $name" >&2
-              exit 1
-            fi
-
-            # secret names are case-insensitive in GitHub
-            source="${source^^}"
-            if ! jq -e --arg k "$source" 'with_entries(.key |= ascii_upcase) | has($k)' <<<"$ALL_SECRETS" >/dev/null; then
-              echo "Secret $source not found. Is the caller using 'secrets: inherit'?" >&2
-              exit 1
-            fi
-            value="$(jq -r --arg k "$source" 'with_entries(.key |= ascii_upcase) | .[$k]' <<<"$ALL_SECRETS")"
-
-            while IFS= read -r part; do
-              [ -n "$part" ] && echo "::add-mask::$part"
-            done <<<"$value"
-
-            delimiter="EOF_$(openssl rand -hex 8)"
-            printf '%s<<%s\n%s\n%s\n' "$name" "$delimiter" "$value" "$delimiter" >> "$GITHUB_ENV"
-          done <<<"$MAPPINGS"
+        uses: aneillans/github-templates/actions/export-secrets@v1
+        with:
+          mappings: ${{ inputs.env_secrets }}
+          secrets_json: ${{ toJSON(secrets) }}
 
       - name: Initialize Terraform
         run: |

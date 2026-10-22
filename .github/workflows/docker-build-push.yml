@@ -19,6 +19,16 @@ on:
         required: false
         type: string
         default: "."
+      target:
+        description: Dockerfile stage to build; empty builds the last stage
+        required: false
+        type: string
+        default: ""
+      build_args:
+        description: Build arguments, one KEY=value per line
+        required: false
+        type: string
+        default: ""
       platforms:
         description: Comma-separated target platforms, e.g. "linux/amd64,linux/arm64"
         required: false
@@ -69,6 +79,9 @@ on:
       registry_password:
         description: Required unless push is false
         required: false
+      build_secrets:
+        description: BuildKit secrets, one id=value per line, for RUN --mount=type=secret
+        required: false
     outputs:
       digest:
         description: Digest of the built image (manifest list digest for multi-platform builds)
@@ -77,8 +90,8 @@ on:
         description: Tags applied to the image, newline-separated
         value: ${{ jobs.build.outputs.tags || jobs.prepare.outputs.tags }}
 
-permissions:
-  contents: read
+# No top-level permissions: jobs inherit the caller's token, so a caller pushing to ghcr.io can
+# grant packages: write. Declaring a narrower set here would cap it.
 
 jobs:
   build:
@@ -128,6 +141,9 @@ jobs:
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
+          target: ${{ inputs.target }}
+          build-args: ${{ inputs.build_args }}
+          secrets: ${{ secrets.build_secrets }}
           push: ${{ inputs.push }}
           platforms: ${{ inputs.platforms }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -220,6 +236,9 @@ jobs:
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
+          target: ${{ inputs.target }}
+          build-args: ${{ inputs.build_args }}
+          secrets: ${{ secrets.build_secrets }}
           platforms: ${{ matrix.platform }}
           labels: ${{ needs.prepare.outputs.labels }}
           provenance: ${{ inputs.provenance }}

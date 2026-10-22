@@ -1,0 +1,167 @@
+name: Helm Deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      chart:
+        description: Chart path relative to repo root
+        required: true
+        type: string
+      release:
+        required: true
+        type: string
+      namespace:
+        required: true
+        type: string
+      ref:
+        description: Git ref to check out the chart from; empty uses the triggering commit
+        required: false
+        type: string
+        default: ""
+      environment:
+        description: GitHub Environment to run under (for approvals + environment-scoped secrets)
+        required: false
+        type: string
+      runs_on:
+        description: Runner label; use a self-hosted label when the cluster API isn't public
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      values_files:
+        description: Values files relative to repo root, one per line, applied in order
+        required: false
+        type: string
+        default: ""
+      set_values:
+        description: Non-secret overrides, one path=value per line, passed as --set-string
+        required: false
+        type: string
+        default: ""
+      secret_values:
+        description: |
+          Secret overrides, one helm.path=SECRET_NAME per line. Written to a temporary values
+          file rather than the command line. Environment secrets resolve when `environment` is
+          set; repo secrets need the caller to pass `secrets: inherit`.
+        required: false
+        type: string
+        default: ""
+      var_values:
+        description: Overrides from configuration variables, one helm.path=VAR_NAME per line
+        required: false
+        type: string
+        default: ""
+      kubeconfig_secret:
+        description: Name of the secret holding a base64-encoded kubeconfig
+        required: false
+        type: string
+        default: "KUBE_CONFIG"
+      helm_version:
+        required: false
+        type: string
+        default: "v3.16.4"
+      timeout:
+        required: false
+        type: string
+        default: "5m"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ${{ inputs.runs_on }}
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ inputs.helm_version }}
+
+      - name: Write kubeconfig and values overrides
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+          ALL_VARS: ${{ toJSON(vars) }}
+          KUBECONFIG_SECRET: ${{ inputs.kubeconfig_secret }}
+          SECRET_VALUES: ${{ inputs.secret_values }}
+          VAR_VALUES: ${{ inputs.var_values }}
+        run: |
+          # secret and variable names are case-insensitive in GitHub
+          lookup() {
+            jq -er --arg k "${2^^}" 'with_entries(.key |= ascii_upcase) | .[$k] // empty' <<<"$1"
+          }
+
+          # builds a nested values object from "a.b.c=NAME" lines
+          to_values() {
+            local source="$1" mappings="$2" out='{}' line path name value
+            while IFS= read -r line || [ -n "$line" ]; do
+              line="$(printf '%s' "$line" | tr -d '[:space:]')"
+              [ -z "$line" ] && continue
+              path="${line%%=*}"
+              name="${line#*=}"
+              if ! value="$(lookup "$source" "$name")"; then
+                echo "$name not found for $path" >&2
+                return 1
+              fi
+              out="$(jq --arg p "$path" --arg v "$value" 'setpath($p | split("."); $v)' <<<"$out")"
+            done <<<"$mappings"
+            printf '%s' "$out"
+          }
+
+          mkdir -p "$RUNNER_TEMP/helm"
+          if ! kubeconfig="$(lookup "$ALL_SECRETS" "$KUBECONFIG_SECRET")"; then
+            echo "Secret $KUBECONFIG_SECRET not found" >&2
+            exit 1
+          fi
+          base64 -d <<<"$kubeconfig" > "$RUNNER_TEMP/helm/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/helm/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/helm/kubeconfig" >> "$GITHUB_ENV"
+
+          # JSON is valid YAML, so helm reads these as values files
+          to_values "$ALL_VARS" "$VAR_VALUES" > "$RUNNER_TEMP/helm/vars.json"
+          (umask 077; to_values "$ALL_SECRETS" "$SECRET_VALUES" > "$RUNNER_TEMP/helm/secrets.json")
+
+      - name: Verify cluster connectivity
+        run: kubectl cluster-info
+
+      - name: Helm upgrade --install
+        env:
+          CHART: ${{ inputs.chart }}
+          RELEASE: ${{ inputs.release }}
+          NAMESPACE: ${{ inputs.namespace }}
+          VALUES_FILES: ${{ inputs.values_files }}
+          SET_VALUES: ${{ inputs.set_values }}
+          TIMEOUT: ${{ inputs.timeout }}
+        run: |
+          args=()
+          while IFS= read -r f; do
+            f="$(printf '%s' "$f" | tr -d '[:space:]')"
+            [ -n "$f" ] && args+=(-f "$f")
+          done <<<"$VALUES_FILES"
+          args+=(-f "$RUNNER_TEMP/helm/vars.json" -f "$RUNNER_TEMP/helm/secrets.json")
+          while IFS= read -r s; do
+            s="$(printf '%s' "$s" | tr -d '[:space:]')"
+            [ -n "$s" ] && args+=(--set-string "$s")
+          done <<<"$SET_VALUES"
+
+          helm upgrade --install "$RELEASE" "$CHART" \
+            --namespace "$NAMESPACE" --create-namespace \
+            "${args[@]}" \
+            --atomic --wait --timeout "$TIMEOUT"
+
+      - name: Show release status
+        env:
+          RELEASE: ${{ inputs.release }}
+          NAMESPACE: ${{ inputs.namespace }}
+        run: helm status "$RELEASE" --namespace "$NAMESPACE"
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/helm"

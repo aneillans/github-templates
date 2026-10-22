@@ -1,0 +1,47 @@
+name: Export secrets as environment variables
+description: Exports named secrets into GITHUB_ENV, masked, for later steps in the same job
+
+inputs:
+  mappings:
+    description: |
+      Newline-separated secrets to export, one per line. "ENV_NAME=SECRET_NAME" exports
+      SECRET_NAME as ENV_NAME; a bare "SECRET_NAME" exports it under its own name.
+    required: true
+  secrets_json:
+    description: "Pass toJSON(secrets) from the calling workflow; composite actions can't read the secrets context"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        ALL_SECRETS: ${{ inputs.secrets_json }}
+        MAPPINGS: ${{ inputs.mappings }}
+      run: |
+        while IFS= read -r line || [ -n "$line" ]; do
+          line="$(printf '%s' "$line" | tr -d '[:space:]')"
+          [ -z "$line" ] && continue
+
+          name="${line%%=*}"
+          source="${line#*=}"
+          if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo "Invalid environment variable name: $name" >&2
+            exit 1
+          fi
+
+          # secret names are case-insensitive in GitHub
+          source="${source^^}"
+          if ! jq -e --arg k "$source" 'with_entries(.key |= ascii_upcase) | has($k)' <<<"$ALL_SECRETS" >/dev/null; then
+            echo "Secret $source not found. Is the caller using 'secrets: inherit'?" >&2
+            exit 1
+          fi
+          value="$(jq -r --arg k "$source" 'with_entries(.key |= ascii_upcase) | .[$k]' <<<"$ALL_SECRETS")"
+
+          while IFS= read -r part; do
+            [ -n "$part" ] && echo "::add-mask::$part"
+          done <<<"$value"
+
+          delimiter="EOF_$(openssl rand -hex 8)"
+          printf '%s<<%s\n%s\n%s\n' "$name" "$delimiter" "$value" "$delimiter" >> "$GITHUB_ENV"
+        done <<<"$MAPPINGS"

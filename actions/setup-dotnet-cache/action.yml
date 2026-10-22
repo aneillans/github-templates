@@ -1,5 +1,5 @@
 name: Setup .NET with NuGet cache
-description: Installs the .NET SDK and caches ~/.nuget/packages keyed on packages.lock.json
+description: Installs the .NET SDK and caches ~/.nuget/packages keyed on lock files, falling back to project files
 
 inputs:
   dotnet-version:
@@ -16,6 +16,7 @@ runs:
     - uses: actions/cache@v6
       with:
         path: ~/.nuget/packages
-        key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
+        # repos without packages.lock.json still need a key that changes when dependencies do
+        key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/nuget.config', '**/NuGet.config') }}
         restore-keys: |
           ${{ runner.os }}-nuget-
