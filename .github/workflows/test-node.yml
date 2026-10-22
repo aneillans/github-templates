@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/cloudflare-worker-deploy.yml"
       - ".github/workflows/docker-build-push.yml"
+      - ".github/workflows/node-ci.yml"
       - ".github/workflows/test-node.yml"
       - "actions/setup-node-cache/**"
       - "tests/node-app/**"
@@ -15,6 +16,7 @@ on:
     paths:
       - ".github/workflows/cloudflare-worker-deploy.yml"
       - ".github/workflows/docker-build-push.yml"
+      - ".github/workflows/node-ci.yml"
       - ".github/workflows/test-node.yml"
       - "actions/setup-node-cache/**"
       - "tests/node-app/**"
@@ -39,6 +41,12 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  node-ci:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working_directory: tests/node-app
+      build_command: ""
+
   worker-dry-run:
     uses: ./.github/workflows/cloudflare-worker-deploy.yml
     with:
@@ -59,6 +67,11 @@ jobs:
       dockerfile: tests/node-app/Dockerfile
       platforms: linux/amd64,linux/arm64
       push: false
+      build_args: |
+        APP_VERSION=0.0.0-test
+    secrets:
+      build_secrets: |
+        test_secret=not-a-secret
 
   docker-native:
     needs: app-test
