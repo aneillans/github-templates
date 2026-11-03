@@ -115,7 +115,7 @@ jobs:
 ```
 
 resolve-deploy takes the commit from `run_sha`, then `ref` (a SHA, tag or
-branch, in that order), then the newest commit on `search_branch` (default
+branch, in that order, with version tags working as `v1.5.0` or `1.5.0`), then the newest commit on `search_branch` (default
 `main`) that has images. It fails if the commit isn't in `require_branch`'s
 history, or if a tag has no published release under `require_published`. Missing
 images fail too, unless `allow_missing` is set and `ref` names a branch or tag,
@@ -138,6 +138,7 @@ Releases are separate from deploys and take three steps:
 3. **Publish** (`release-publish`): flips the draft to published. Production
    refuses the tag until then.
 
+Versions are written `v1.5.0` everywhere, and every input also accepts `1.5.0`.
 Without `version`, the cut uses next-version. An existing version needs `force`,
 which regenerates the notes, rebuilds the images, replaces the zip and returns a
 published release to draft. The tag only moves if `ref` is also set. Rebuilding

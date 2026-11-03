@@ -50,6 +50,12 @@ runs:
         REF_NAME: ${{ github.ref_name }}
       run: bash "$GITHUB_ACTION_PATH/next-version.sh" >> "$GITHUB_OUTPUT"
 
+    - shell: bash
+      env:
+        STAMP: ${{ steps.next.outputs.stamp }}
+        BUMP: ${{ steps.next.outputs.bump }}
+      run: echo "Version $STAMP (bump $BUMP)" >> "$GITHUB_STEP_SUMMARY"
+
     - if: always()
       shell: bash
       run: rm -rf .next-version

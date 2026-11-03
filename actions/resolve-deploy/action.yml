@@ -13,7 +13,7 @@ inputs:
     required: false
     default: ""
   ref:
-    description: Branch, tag or SHA requested by hand. Empty picks the newest built commit on search_branch.
+    description: Branch, tag or SHA requested by hand; a version tag works with or without tag_prefix. Empty picks the newest built commit on search_branch.
     required: false
     default: ""
   sha:
@@ -54,11 +54,17 @@ inputs:
   registry_password:
     required: false
     default: ""
+  tag_prefix:
+    required: false
+    default: "v"
   github_token:
     required: false
     default: ${{ github.token }}
 
 outputs:
+  ref:
+    description: The branch or tag that ref resolved to, e.g. v1.5.0 for 1.5.0; empty for a SHA or no ref
+    value: ${{ steps.resolve.outputs.ref }}
   sha:
     description: Full commit SHA to deploy
     value: ${{ steps.resolve.outputs.sha }}
@@ -96,6 +102,7 @@ runs:
         REQUIRE_BRANCH: ${{ inputs.require_branch }}
         REQUIRE_PUBLISHED: ${{ inputs.require_published }}
         ALLOW_MISSING: ${{ inputs.allow_missing }}
+        TAG_PREFIX: ${{ inputs.tag_prefix }}
         SEARCH_BRANCH: ${{ inputs.search_branch }}
         SEARCH_DEPTH: ${{ inputs.search_depth }}
         VERSION_ENV: ${{ inputs.version_env }}
@@ -106,6 +113,7 @@ runs:
 
         named=false
         is_tag=false
+        ref=""
         if [ -n "$RUN_SHA" ]; then
           sha="$RUN_SHA"
         elif [ -n "$INPUT_REF" ]; then
@@ -115,8 +123,12 @@ runs:
           fi
           if [ -z "$sha" ]; then
             named=true
+            ref="$INPUT_REF"
             if sha="$(git rev-parse --verify --quiet "refs/tags/${INPUT_REF}^{commit}")"; then
               is_tag=true
+            elif sha="$(git rev-parse --verify --quiet "refs/tags/${TAG_PREFIX}${INPUT_REF}^{commit}")"; then
+              is_tag=true
+              ref="$TAG_PREFIX$INPUT_REF"
             else
               sha="$(git rev-parse --verify --quiet "origin/${INPUT_REF}^{commit}")" \
                 || { echo "::error::Unknown branch, tag or commit: $INPUT_REF"; exit 1; }
@@ -133,8 +145,8 @@ runs:
         published=false
         if [ "$REQUIRE_PUBLISHED" = true ] && [ "$is_tag" = true ]; then
           # this endpoint only returns published releases
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$INPUT_REF" >/dev/null 2>&1 \
-            || { echo "::error::$INPUT_REF has no published release; publish it first"; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$ref" >/dev/null 2>&1 \
+            || { echo "::error::$ref has no published release; publish it first"; exit 1; }
           published=true
         fi
 
@@ -158,8 +170,10 @@ runs:
 
         if [ "$built_all" = false ]; then
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "built=false" >> "$GITHUB_OUTPUT"
-          echo "$sha has no images; the caller builds $INPUT_REF"
+          echo "$sha has no images; the caller builds $ref"
+          echo "Deploying ${ref:+$ref at }$sha, building it first" >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
 
@@ -174,9 +188,11 @@ runs:
         fi
 
         echo "sha=$sha" >> "$GITHUB_OUTPUT"
+        echo "ref=$ref" >> "$GITHUB_OUTPUT"
         echo "built=true" >> "$GITHUB_OUTPUT"
         echo "version=$version" >> "$GITHUB_OUTPUT"
         echo "Deploying $sha${version:+ ($version)}"
+        echo "Deploying ${ref:+$ref at }$sha${version:+, version $version}" >> "$GITHUB_STEP_SUMMARY"
 
     - if: always()
       shell: bash
