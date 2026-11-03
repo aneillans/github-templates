@@ -7,7 +7,7 @@ on:
   workflow_call:
     inputs:
       version:
-        description: Semver, with or without the tag prefix; empty computes the next version
+        description: Version, e.g. v1.5.0; the tag prefix is optional. Empty computes the next version
         required: false
         type: string
         default: ""
@@ -95,6 +95,7 @@ jobs:
         run: |
           resolve() {
             git rev-parse --verify --quiet "refs/tags/$1^{commit}" \
+              || git rev-parse --verify --quiet "refs/tags/$TAG_PREFIX$1^{commit}" \
               || git rev-parse --verify --quiet "origin/$1^{commit}" \
               || git rev-parse --verify --quiet "$1^{commit}" \
               || { echo "::error::Unknown ref $1" >&2; return 1; }
@@ -241,4 +242,5 @@ jobs:
       - name: Summary
         env:
           TAG: ${{ steps.final.outputs.tag }}
-        run: echo "Draft release $TAG is ready. Deploy $TAG to development, validate, then run Publish Release." >> "$GITHUB_STEP_SUMMARY"
+          SHA: ${{ steps.target.outputs.sha }}
+        run: echo "Draft release $TAG is ready at $SHA. Deploy $TAG to development, validate, then run Publish Release." >> "$GITHUB_STEP_SUMMARY"

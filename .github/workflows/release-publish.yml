@@ -7,7 +7,7 @@ on:
   workflow_call:
     inputs:
       version:
-        description: Version to publish, with or without the tag prefix
+        description: Version to publish, e.g. v1.5.0; the tag prefix is optional
         required: true
         type: string
       images:
