@@ -41,6 +41,7 @@ actions/
   resolve-deploy/               pick and verify the commit a deploy job ships
   next-version/                 next semver from the PRs and commits since the last tag
   build-and-wait/               dispatch the caller's build on a branch or tag and wait for it
+  helm-deploy/                  helm upgrade --install, one release, in the caller's own job
 tests/
   terraform/     random_pet + terraform_data, S3 remote state in the github-templates bucket on storage.neillans.co.uk
   node-app/      HTTP server with node:test tests and a Dockerfile
@@ -261,17 +262,39 @@ jobs:
 ### Environment secrets
 
 A job that calls a reusable workflow can't set `environment:`, so the caller
-can't read environment-scoped secrets and pass them on. The template job runs
-under the environment and reads them itself. Templates with an `environment`
-input (terraform-deploy, cloudflare-worker-deploy, helm-deploy) support this:
+can't read environment-scoped secrets and pass them on. Templates with an
+`environment` input (terraform-deploy, cloudflare-worker-deploy, helm-deploy)
+run their job under that environment, so its approvals, deployment branch
+policies and variables apply.
 
-- Name-mapped inputs resolve environment secrets and variables directly, and
-  take them over a `secrets_json` entry of the same name. Repo and org secrets
-  in the same mapping still need `secrets: inherit` or `secrets_json`.
-- Explicit secrets must be repo or org secrets, because the caller resolves
-  them outside the environment.
-- The environment's approvals and deployment branch policies gate the template
-  job as usual.
+From another owner (e.g. `PostyFox/*`), environment secrets don't reach the
+template job: its `secrets` context held only `github_token` in a real
+helm-deploy run, while the environment's variables arrived. Use a composite
+action in a job of your own instead, where `secrets` includes them:
+
+```yaml
+  production:
+    runs-on: self-hosted
+    environment: production
+    steps:
+      - uses: aneillans/github-templates/actions/helm-deploy@v1
+        with:
+          chart: deploy/helm/my-app
+          release: my-app
+          namespace: my-app
+          secret_values: |
+            postgres.password=DB_PASSWORD
+          var_values: |
+            config.host=APP_HOST
+          secrets_json: ${{ toJSON(secrets) }}
+          vars_json: ${{ toJSON(vars) }}
+```
+
+Values in `vars_json` appear in the job log, so keep anything sensitive in
+secrets.
+
+Explicit secrets must be repo or org secrets, because the caller resolves them
+outside the environment.
 
 dotnet-ci, node-ci and docker-build-push have no `environment` input and can
 only use repo and org secrets.
