@@ -29,6 +29,8 @@ one-line diff in the calling repo; github-templates never changes.
   dotnet-ci.yml                 restore/build/test, one project or sln
   node-ci.yml                   npm ci + lint/build/test, one package
   helm-deploy.yml               helm upgrade --install, one release
+  release-cut.yml               tag, draft release, images built at the tag, deploy zip
+  release-publish.yml           flip a validated draft release to published
   dotnet-pack.yml               pack to nupkg, one csproj
   dotnet-nuget-publish.yml      push downloaded nupkgs to a feed
   cloudflare-worker-deploy.yml  wrangler deploy, one target
@@ -37,7 +39,8 @@ actions/
   setup-node-cache/             setup-node + optional npm cache, used by the Node templates
   export-secrets/               named secrets -> masked env vars, used by dotnet-ci and terraform-deploy
   resolve-deploy/               pick and verify the commit a deploy job ships
-  tag-release/                  tag a deployed commit and publish a GitHub Release
+  next-version/                 next semver from the PRs and commits since the last tag
+  build-and-wait/               dispatch the caller's build on a branch or tag and wait for it
 tests/
   terraform/     random_pet + terraform_data, S3 remote state in the github-templates bucket on storage.neillans.co.uk
   node-app/      HTTP server with node:test tests and a Dockerfile
@@ -59,8 +62,11 @@ uses it by local path.
 - Node: `node-ci`, a `wrangler deploy --dry-run`, and amd64+arm64 image
   builds through both the QEMU and native-runner paths (no push), with
   build args and a build secret on the QEMU path.
-- Helm, resolve-deploy, tag-release: no self-test; they need a cluster, a
-  registry holding SHA-tagged images, or write access to create releases.
+- next-version: `tests/next-version/test.sh` runs the bump rules against
+  throwaway repos with a stub `gh`.
+- Helm, resolve-deploy, build-and-wait, release-cut, release-publish: no
+  self-test; they need a cluster, a registry holding SHA-tagged images, or
+  write access to create releases.
 - .NET: build, test and pack. Nothing is published.
 
 ## Build and deploy conventions
@@ -95,33 +101,54 @@ jobs:
             ghcr.io/my-org/my-app-api
             ghcr.io/my-org/my-app-worker
           run_sha: ${{ github.event.workflow_run.head_sha }}
-          sha: ${{ inputs.sha }}
-          # production only takes commits on main
+          ref: ${{ inputs.ref }}
+          # production takes published release tags or commits on main
           require_branch: ${{ inputs.environment == 'production' && 'main' || '' }}
+          require_published: ${{ inputs.environment == 'production' }}
+          allow_missing: "true"
           version_env: APP_VERSION
           registry: ghcr.io
           registry_username: ${{ github.actor }}
           registry_password: ${{ secrets.GITHUB_TOKEN }}
 
-  # ... deploy jobs use needs.resolve.outputs.sha as the image tag ...
-
-  release:
-    needs: [resolve, deploy]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: aneillans/github-templates/actions/tag-release@v1
-        with:
-          sha: ${{ needs.resolve.outputs.sha }}
-          version: ${{ needs.resolve.outputs.version }}
+  # ... a job using build-and-wait when built is false, then deploy jobs using needs.resolve.outputs.sha as the image tag ...
 ```
 
-resolve-deploy takes the commit from `run_sha`, then `sha`, then the newest
-commit on `search_branch` (default `main`) that has images. It fails if any
-listed image is missing for that commit, or if the commit isn't in
-`require_branch`'s history. tag-release drops `+build` metadata, so
-`1.4.3+cf25037` becomes `v1.4.3`, and fails if the tag already exists.
+resolve-deploy takes the commit from `run_sha`, then `ref` (a SHA, tag or
+branch, in that order), then the newest commit on `search_branch` (default
+`main`) that has images. It fails if the commit isn't in `require_branch`'s
+history, or if a tag has no published release under `require_published`. Missing
+images fail too, unless `allow_missing` is set and `ref` names a branch or tag,
+which sets `built` to `false`.
+
+Pass `ref` as an input rather than using the "Use workflow from" picker: the
+workflow then always runs from the default branch, so redeploying an old tag
+doesn't run that tag's old deploy logic. Environment branch policies only check
+the picker's ref, so what reaches production is enforced here.
+
+## Releases
+
+Releases are separate from deploys and take three steps:
+
+1. **Cut** (`release-cut`): creates the tag, a draft release with generated
+   notes, images built at the tag, and a `<repo>-<tag>-deploy.zip`. GitHub adds
+   source archives once the release is published. The zip holds packaged charts
+   stamped with the version, `bundle_paths`, `release.env` and `images.txt`.
+2. **Validate**: deploy the tag to dev.
+3. **Publish** (`release-publish`): flips the draft to published. Production
+   refuses the tag until then.
+
+Without `version`, the cut uses next-version. An existing version needs `force`,
+which regenerates the notes, rebuilds the images, replaces the zip and returns a
+published release to draft. The tag only moves if `ref` is also set. Rebuilding
+overwrites the images' SHA and version tags, so a re-cut changes what those tags
+point to. Immutable releases must stay off for `force` to work.
+
+The caller's build workflow needs a `workflow_dispatch` trigger. It builds on
+the tag itself, so docker-build-push tags the images with the version and the
+full SHA, not `latest`. A cut's job needs `contents: write`, `actions: write`,
+`packages: read` and `pull-requests: read`; publish needs `contents: write` and
+`packages: read`.
 
 ## Versioning
 

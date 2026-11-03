@@ -1,0 +1,244 @@
+name: Release Cut (reusable)
+
+# Creates or re-cuts a draft release: tag, generated notes, images built at the tag, deploy zip.
+# Never deploys. Deploy the tag to dev, validate, then run release-publish.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Semver, with or without the tag prefix; empty computes the next version
+        required: false
+        type: string
+        default: ""
+      ref:
+        description: Branch, tag or SHA to release. Empty uses the default branch, or stays on the tagged commit when re-cutting
+        required: false
+        type: string
+        default: ""
+      force:
+        description: Re-cut an existing version. Needs version. The tag only moves if ref is set
+        required: false
+        type: boolean
+        default: false
+      images:
+        description: Image references without a tag, one per line; recorded by digest in the zip
+        required: true
+        type: string
+      bundle_paths:
+        description: Files or directories to copy into the zip, one per line. Listed explicitly so env files stay out
+        required: true
+        type: string
+      charts:
+        description: Chart directories to package into the zip, one per line, stamped with the version and tag
+        required: false
+        type: string
+        default: ""
+      release_env:
+        description: Contents of release.env in the zip; {tag} becomes the release tag
+        required: false
+        type: string
+        default: ""
+      build_workflow:
+        description: Caller's workflow file that builds the images; needs a workflow_dispatch trigger
+        required: false
+        type: string
+        default: build.yml
+      registry:
+        required: false
+        type: string
+        default: ghcr.io
+      registry_username:
+        required: false
+        type: string
+        default: ${{ github.actor }}
+      tag_prefix:
+        required: false
+        type: string
+        default: "v"
+      helm_version:
+        required: false
+        type: string
+        default: "v3.16.4"
+    outputs:
+      tag:
+        value: ${{ jobs.cut.outputs.tag }}
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+      packages: read
+      pull-requests: read
+    outputs:
+      tag: ${{ steps.final.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG_PREFIX: ${{ inputs.tag_prefix }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve commit
+        id: target
+        env:
+          VERSION: ${{ inputs.version }}
+          REF: ${{ inputs.ref }}
+          FORCE: ${{ inputs.force }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          resolve() {
+            git rev-parse --verify --quiet "refs/tags/$1^{commit}" \
+              || git rev-parse --verify --quiet "origin/$1^{commit}" \
+              || git rev-parse --verify --quiet "$1^{commit}" \
+              || { echo "::error::Unknown ref $1" >&2; return 1; }
+          }
+
+          version="${VERSION#"$TAG_PREFIX"}"
+          if [ "$FORCE" = true ] && [ -z "$version" ]; then
+            echo "::error::force needs a version"
+            exit 1
+          fi
+
+          if [ -n "$version" ] && git rev-parse --verify --quiet "refs/tags/$TAG_PREFIX$version" >/dev/null; then
+            if [ "$FORCE" != true ]; then
+              echo "::error::$TAG_PREFIX$version already exists; set force to re-cut it"
+              exit 1
+            fi
+            sha="$(resolve "${REF:-$TAG_PREFIX$version}")"
+          else
+            sha="$(resolve "${REF:-$DEFAULT_BRANCH}")"
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Compute next version
+        id: next
+        if: steps.target.outputs.version == ''
+        uses: aneillans/github-templates/actions/next-version@v1
+        with:
+          sha: ${{ steps.target.outputs.sha }}
+          tag_prefix: ${{ inputs.tag_prefix }}
+
+      - name: Check version
+        id: final
+        env:
+          GIVEN: ${{ steps.target.outputs.version }}
+          NEXT: ${{ steps.next.outputs.version }}
+        run: |
+          version="${GIVEN:-$NEXT}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+            || { echo "::error::Not a semver version: '$version'"; exit 1; }
+          tag="$TAG_PREFIX$version"
+          # a computed version lands on an existing tag when nothing changed since it
+          if [ -z "$GIVEN" ] && git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+            echo "::error::$tag already exists; no changes to release, or give a version"
+            exit 1
+          fi
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+      - name: Create or move tag
+        env:
+          TAG: ${{ steps.final.outputs.tag }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          current="$(git rev-parse --verify --quiet "refs/tags/$TAG^{commit}" || true)"
+          # lightweight on purpose: the release holds the notes
+          if [ -z "$current" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$SHA" >/dev/null
+          elif [ "$current" != "$SHA" ]; then
+            echo "::warning::Moving $TAG from $current to $SHA"
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f "sha=$SHA" -F force=true >/dev/null
+          fi
+
+      - name: Create or update draft release
+        env:
+          TAG: ${{ steps.final.outputs.tag }}
+          SHA: ${{ steps.target.outputs.sha }}
+          PRERELEASE: ${{ steps.final.outputs.prerelease }}
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f "tag_name=$TAG" -f "target_commitish=$SHA" --jq .body > "$notes"
+          # a published release goes back to draft: it needs validating again
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=true --title "$TAG" \
+              --target "$SHA" --notes-file "$notes" --prerelease="$PRERELEASE"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "$TAG" \
+              --notes-file "$notes" --prerelease="$PRERELEASE"
+          fi
+
+      - name: Build images at the tag
+        uses: aneillans/github-templates/actions/build-and-wait@v1
+        with:
+          ref: ${{ steps.final.outputs.tag }}
+          workflow: ${{ inputs.build_workflow }}
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ inputs.registry_username }}
+          password: ${{ github.token }}
+
+      - if: inputs.charts != ''
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ inputs.helm_version }}
+
+      - name: Package and attach deploy zip
+        env:
+          TAG: ${{ steps.final.outputs.tag }}
+          VERSION: ${{ steps.final.outputs.version }}
+          SHA: ${{ steps.target.outputs.sha }}
+          IMAGES: ${{ inputs.images }}
+          BUNDLE_PATHS: ${{ inputs.bundle_paths }}
+          CHARTS: ${{ inputs.charts }}
+          RELEASE_ENV: ${{ inputs.release_env }}
+        run: |
+          git checkout --quiet --detach "$SHA"
+
+          name="${GITHUB_REPOSITORY#*/}-$TAG-deploy"
+          stage="$RUNNER_TEMP/$name"
+          mkdir -p "$stage"
+
+          while IFS= read -r path; do
+            path="$(printf '%s' "$path" | tr -d '[:space:]')"
+            [ -n "$path" ] && cp -r --parents "$path" "$stage/"
+          done <<<"$BUNDLE_PATHS"
+
+          while IFS= read -r chart; do
+            chart="$(printf '%s' "$chart" | tr -d '[:space:]')"
+            # charts default image.tag to appVersion, so the package pins this release's images
+            [ -n "$chart" ] && helm package "$chart" --version "$VERSION" --app-version "$TAG" -d "$stage/charts"
+          done <<<"$CHARTS"
+
+          if [ -n "$RELEASE_ENV" ]; then
+            printf '%s\n' "${RELEASE_ENV//\{tag\}/$TAG}" > "$stage/release.env"
+          fi
+
+          while IFS= read -r image; do
+            image="$(printf '%s' "$image" | tr -d '[:space:]')"
+            [ -n "$image" ] || continue
+            digest="$(docker buildx imagetools inspect "$image:$TAG" --format '{{json .Manifest}}' | jq -r .digest)"
+            echo "$image:$TAG@$digest" >> "$stage/images.txt"
+          done <<<"$IMAGES"
+
+          (cd "$RUNNER_TEMP" && zip -qr "$name.zip" "$name")
+          gh release upload "$TAG" "$RUNNER_TEMP/$name.zip" --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Summary
+        env:
+          TAG: ${{ steps.final.outputs.tag }}
+        run: echo "Draft release $TAG is ready. Deploy $TAG to development, validate, then run Publish Release." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,26 @@
+name: Test next-version
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/test-next-version.yml"
+      - "actions/next-version/**"
+      - "tests/next-version/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/test-next-version.yml"
+      - "actions/next-version/**"
+      - "tests/next-version/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash tests/next-version/test.sh

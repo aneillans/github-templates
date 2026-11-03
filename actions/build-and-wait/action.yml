@@ -1,0 +1,46 @@
+name: Build and wait
+description: |
+  Dispatches the caller's build workflow on a branch or tag and fails if that run fails. Running on
+  the ref itself gives correct checkouts, image tags and validation without passing a ref through
+  every template. Tags created with GITHUB_TOKEN don't fire push triggers, but dispatches do.
+  Needs actions: write.
+
+inputs:
+  ref:
+    description: Branch or tag to build
+    required: true
+  workflow:
+    description: Workflow file with a workflow_dispatch trigger
+    required: false
+    default: build.yml
+  github_token:
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        REF: ${{ inputs.ref }}
+        WORKFLOW: ${{ inputs.workflow }}
+      run: |
+        # margin for clock skew between the runner and GitHub
+        since="$(date -u -d '-30 seconds' +%Y-%m-%dT%H:%M:%SZ)"
+        gh workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$REF"
+
+        # the dispatch API returns no run id
+        id=""
+        for _ in $(seq 1 30); do
+          sleep 10
+          id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" \
+            --event workflow_dispatch --limit 20 --json databaseId,createdAt,headBranch \
+            | jq -r --arg ref "$REF" --arg since "$since" \
+              '[.[] | select(.headBranch == $ref and .createdAt >= $since)] | first | .databaseId // empty')"
+          [ -n "$id" ] && break
+        done
+        [ -n "$id" ] || { echo "::error::No $WORKFLOW run appeared for $REF"; exit 1; }
+
+        echo "Waiting for https://github.com/$GITHUB_REPOSITORY/actions/runs/$id"
+        gh run watch "$id" --repo "$GITHUB_REPOSITORY" --exit-status --compact --interval 30

@@ -1,0 +1,55 @@
+name: Next version
+description: |
+  Computes the next semver from the commits since the last vX.Y.Z tag, using each commit's PR.
+  Major: `type!:` in a commit subject or PR title, or BREAKING CHANGE in a commit message or PR title.
+  Minor: a feat/ or feature/ source branch, or a `feat:` commit subject or PR title (any case).
+  Patch: anything else. Commits with no PR use their message alone.
+  On a tag build with no sha given, the tag is the version. Needs pull-requests: read.
+
+inputs:
+  sha:
+    description: Commit to version; empty uses the triggering commit
+    required: false
+    default: ""
+  tag_prefix:
+    required: false
+    default: "v"
+  github_token:
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  version:
+    description: Next version, e.g. 1.5.0
+    value: ${{ steps.next.outputs.version }}
+  bump:
+    description: major, minor, patch or none
+    value: ${{ steps.next.outputs.bump }}
+  stamp:
+    description: Version to bake into a build, e.g. 1.5.0+abc1234, or 1.5.0 on a tag build
+    value: ${{ steps.next.outputs.stamp }}
+
+runs:
+  using: composite
+  steps:
+    # full history and tags
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+        path: .next-version
+
+    - id: next
+      shell: bash
+      working-directory: .next-version
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        REPO: ${{ github.repository }}
+        SHA: ${{ inputs.sha }}
+        TAG_PREFIX: ${{ inputs.tag_prefix }}
+        REF_TYPE: ${{ github.ref_type }}
+        REF_NAME: ${{ github.ref_name }}
+      run: bash "$GITHUB_ACTION_PATH/next-version.sh" >> "$GITHUB_OUTPUT"
+
+    - if: always()
+      shell: bash
+      run: rm -rf .next-version
