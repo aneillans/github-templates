@@ -1,0 +1,76 @@
+name: Release Publish (reusable)
+
+# Flips a validated draft release to published, which lets its tag reach production through
+# resolve-deploy's require_published. Changes nothing else.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to publish, with or without the tag prefix
+        required: true
+        type: string
+      images:
+        description: Image references without a tag, one per line; each must exist at the release tag
+        required: true
+        type: string
+      registry:
+        required: false
+        type: string
+        default: ghcr.io
+      registry_username:
+        required: false
+        type: string
+        default: ${{ github.actor }}
+      tag_prefix:
+        required: false
+        type: string
+        default: "v"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ inputs.registry_username }}
+          password: ${{ github.token }}
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+          IMAGES: ${{ inputs.images }}
+        run: |
+          tag="$TAG_PREFIX${VERSION#"$TAG_PREFIX"}"
+
+          release="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,assets)" \
+            || { echo "::error::No release for $tag; run Release first"; exit 1; }
+          [ "$(jq -r .isDraft <<<"$release")" = true ] \
+            || { echo "::error::$tag is already published"; exit 1; }
+          jq -e '.assets | any(.name | endswith("-deploy.zip"))' <<<"$release" >/dev/null \
+            || { echo "::error::$tag has no deploy zip; the cut didn't finish, so re-cut it with force"; exit 1; }
+
+          while IFS= read -r image; do
+            image="$(printf '%s' "$image" | tr -d '[:space:]')"
+            [ -n "$image" ] || continue
+            docker buildx imagetools inspect "$image:$tag" >/dev/null \
+              || { echo "::error::Missing image $image:$tag"; exit 1; }
+          done <<<"$IMAGES"
+
+          # republishing an older version mustn't take Latest from a newer one
+          highest="$(gh api --paginate "repos/$GITHUB_REPOSITORY/tags" --jq '.[].name' \
+            | grep -E "^$TAG_PREFIX[0-9]+\.[0-9]+\.[0-9]+$" | sort -V | tail -n 1 || true)"
+          latest=false
+          [ "$tag" = "$highest" ] && latest=true
+
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"
+          echo "Published $tag. Deploy it to production when ready." >> "$GITHUB_STEP_SUMMARY"
