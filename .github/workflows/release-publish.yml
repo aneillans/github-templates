@@ -12,8 +12,14 @@ on:
         type: string
       images:
         description: Image references without a tag, one per line; each must exist at the release tag
-        required: true
+        required: false
         type: string
+        default: ""
+      required_assets:
+        description: Name suffixes, one per line; the release needs an asset ending in each
+        required: false
+        type: string
+        default: "-deploy.zip"
       registry:
         required: false
         type: string
@@ -37,7 +43,8 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: docker/login-action@v4
+      - if: inputs.images != ''
+        uses: docker/login-action@v4
         with:
           registry: ${{ inputs.registry }}
           username: ${{ inputs.registry_username }}
@@ -49,6 +56,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           TAG_PREFIX: ${{ inputs.tag_prefix }}
           IMAGES: ${{ inputs.images }}
+          REQUIRED_ASSETS: ${{ inputs.required_assets }}
         run: |
           tag="$TAG_PREFIX${VERSION#"$TAG_PREFIX"}"
 
@@ -56,8 +64,12 @@ jobs:
             || { echo "::error::No release for $tag; run Release first"; exit 1; }
           [ "$(jq -r .isDraft <<<"$release")" = true ] \
             || { echo "::error::$tag is already published"; exit 1; }
-          jq -e '.assets | any(.name | endswith("-deploy.zip"))' <<<"$release" >/dev/null \
-            || { echo "::error::$tag has no deploy zip; the cut didn't finish, so re-cut it with force"; exit 1; }
+          while IFS= read -r suffix; do
+            suffix="$(printf '%s' "$suffix" | tr -d '[:space:]')"
+            [ -n "$suffix" ] || continue
+            jq -e --arg suffix "$suffix" '.assets | any(.name | endswith($suffix))' <<<"$release" >/dev/null \
+              || { echo "::error::$tag has no asset ending in $suffix; the cut didn't finish, so re-cut it with force"; exit 1; }
+          done <<<"$REQUIRED_ASSETS"
 
           while IFS= read -r image; do
             image="$(printf '%s' "$image" | tr -d '[:space:]')"

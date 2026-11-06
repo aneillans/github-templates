@@ -33,6 +33,9 @@ one-line diff in the calling repo; github-templates never changes.
   release-publish.yml           flip a validated draft release to published
   dotnet-pack.yml               pack to nupkg, one csproj
   dotnet-nuget-publish.yml      push downloaded nupkgs to a feed
+  dotnet-appimage.yml           publish + Velopack AppImage, one project, one runtime
+  dotnet-android.yml            publish APK + AAB, optionally signed, one project
+  release-upload-assets.yml     attach build artifacts to a draft release
   cloudflare-worker-deploy.yml  wrangler deploy, one target
 actions/
   setup-dotnet-cache/           setup-dotnet + NuGet cache, used by the .NET templates
@@ -47,6 +50,8 @@ tests/
   node-app/      HTTP server with node:test tests and a Dockerfile
   node-worker/   minimal Cloudflare Worker
   dotnet/        class library + xUnit tests, packable
+  dotnet-appimage/  console app + vpk tool manifest, packed to an AppImage
+  dotnet-android/   minimal Android app, built unsigned
 ```
 
 ## Self-tests
@@ -68,7 +73,10 @@ uses it by local path.
 - Helm, resolve-deploy, build-and-wait, release-cut, release-publish: no
   self-test; they need a cluster, a registry holding SHA-tagged images, or
   write access to create releases.
-- .NET: build, test and pack. Nothing is published.
+- .NET: build, test and pack, plus an AppImage for x64 and arm64 and a
+  debug-signed Android build. Nothing is published. Signing has no self-test,
+  because it needs a keystore.
+- release-upload-assets: no self-test, for the same reason as release-cut.
 
 ## Build and deploy conventions
 
@@ -151,6 +159,92 @@ the tag itself, so docker-build-push tags the images with the version and the
 full SHA, not `latest`. A cut's job needs `contents: write`, `actions: write`,
 `packages: read` and `pull-requests: read`; publish needs `contents: write` and
 `packages: read`.
+
+### Releases without images
+
+A desktop app has files to ship rather than images to deploy. Leave `images`,
+`bundle_paths`, `charts` and `release_env` empty and the cut only creates the
+tag and draft, then dispatches the build at the tag. The build attaches its own
+files in a job limited to tag runs, and validation means testing those downloads:
+
+```yaml
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.version.outputs.stamp }}
+    steps:
+      - id: version
+        uses: aneillans/github-templates/actions/next-version@v1
+        with:
+          # a PR's merge commit belongs to no PR, so version from its head; empty on other events
+          sha: ${{ github.event.pull_request.head.sha }}
+
+  appimage:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - { runtime: linux-x64, runner: ubuntu-24.04 }
+          - { runtime: linux-arm64, runner: ubuntu-24.04-arm }
+    uses: aneillans/github-templates/.github/workflows/dotnet-appimage.yml@v1
+    with:
+      project: src/MyApp/MyApp.csproj
+      runtime: ${{ matrix.runtime }}
+      runner: ${{ matrix.runner }}
+      version: ${{ needs.version.outputs.version }}
+      pack_id: MyApp
+      main_exe: MyApp
+
+  release:
+    needs: appimage
+    if: github.ref_type == 'tag'
+    permissions:
+      contents: write
+    uses: aneillans/github-templates/.github/workflows/release-upload-assets.yml@v1
+    with:
+      tag: ${{ github.ref_name }}
+      artifact_pattern: appimage-*
+```
+
+Pass release-publish `required_assets` with a suffix per expected file, such as
+`linux-x64.AppImage`, because its default expects a deploy zip. Callers still
+grant the permissions listed above: a template's job can't start if it asks for
+more than its caller gives.
+
+Keep one `build.yml` for all platforms, as release-cut dispatches a single
+workflow. The release job then needs every platform's job, so a failure on one
+leaves nothing half-attached. To attach several sets of artifacts, run
+release-upload-assets over a matrix of `artifact_pattern` values.
+
+### Android signing
+
+dotnet-android signs only when `sign` is true. Sign on tags only, with the
+secrets in an environment limited to tags, so branch and PR builds can't read
+them. Required reviewers on that environment hold the dispatched build, and
+release-cut's build-and-wait step, until someone approves.
+
+```yaml
+  android:
+    needs: version
+    uses: aneillans/github-templates/.github/workflows/dotnet-android.yml@v1
+    with:
+      project: src/MyApp.Android/MyApp.Android.csproj
+      version: ${{ needs.version.outputs.version }}
+      version_code: ${{ github.run_number }}
+      package_name: MyApp
+      sign: ${{ github.ref_type == 'tag' }}
+      environment: ${{ github.ref_type == 'tag' && 'release' || '' }}
+    secrets: inherit
+```
+
+The environment needs `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`,
+`ANDROID_STORE_PASSWORD` and `ANDROID_KEY_PASSWORD`. Renaming the calling
+workflow file restarts `github.run_number`, and Play refuses a `versionCode` it
+has already seen.
 
 ## Versioning
 

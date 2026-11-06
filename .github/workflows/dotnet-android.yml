@@ -1,0 +1,209 @@
+name: .NET Android (reusable)
+
+# Publishes one Android project as an APK and an AAB, uploaded as the artifacts android-apk and
+# android-aab. With sign false they carry a generated debug key, which is fine for testing but can't
+# update an install signed by any other key. With sign true a missing secret fails the job, and the
+# APK is checked, so a release can't quietly ship debug-signed.
+#
+# Signing secrets, read from the caller's `secrets: inherit`, normally in an `environment`:
+#   ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS, ANDROID_STORE_PASSWORD, ANDROID_KEY_PASSWORD
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: csproj to publish
+        required: true
+        type: string
+      version:
+        description: Version such as next-version's stamp output. Becomes versionName without the leading v or build metadata
+        required: true
+        type: string
+      version_code:
+        description: Android versionCode. Must rise with every store upload; github.run_number does, unless the workflow file is renamed
+        required: true
+        type: number
+      package_name:
+        description: Starts the output file names, e.g. MyApp gives MyApp-1.5.0-android.apk
+        required: true
+        type: string
+      sign:
+        description: Sign with the keystore from the secrets
+        required: false
+        type: boolean
+        default: false
+      environment:
+        description: GitHub Environment to run under (for environment-scoped secrets)
+        required: false
+        type: string
+      runner:
+        required: false
+        type: string
+        default: ubuntu-latest
+      java_version:
+        required: false
+        type: string
+        default: "21"
+      dotnet_version:
+        required: false
+        type: string
+        default: "10.0.x"
+      global_json_file:
+        description: Path to a global.json; takes the SDK version from it instead of dotnet_version
+        required: false
+        type: string
+        default: ""
+      configuration:
+        required: false
+        type: string
+        default: "Release"
+      harden_runner:
+        description: Run step-security/harden-runner in audit mode
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Android
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - name: Harden runner
+        if: inputs.harden_runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Setup .NET
+        uses: aneillans/github-templates/actions/setup-dotnet-cache@v1
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+          global-json-file: ${{ inputs.global_json_file }}
+
+      - name: Install Android workload
+        run: dotnet workload install android
+
+      - name: Check version
+        id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          version="${VERSION#v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] \
+            || { echo "::error::Not a semver version: '$VERSION'"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "display=${version%%+*}" >> "$GITHUB_OUTPUT"
+
+      - name: Export signing secrets
+        if: inputs.sign
+        uses: aneillans/github-templates/actions/export-secrets@v1
+        with:
+          mappings: |
+            ANDROID_KEYSTORE_BASE64
+            ANDROID_KEY_ALIAS
+            ANDROID_STORE_PASSWORD
+            ANDROID_KEY_PASSWORD
+          secrets_json: ${{ toJSON(secrets) }}
+
+      - name: Decode keystore
+        if: inputs.sign
+        run: |
+          umask 077
+          base64 -d <<<"$ANDROID_KEYSTORE_BASE64" > "$RUNNER_TEMP/release.keystore"
+
+      # publish does its own restore: a separate one misses the ReadyToRun runtime pack
+      - name: Publish
+        env:
+          PROJECT: ${{ inputs.project }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DISPLAY_VERSION: ${{ steps.version.outputs.display }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          SIGN: ${{ inputs.sign }}
+        run: |
+          args=()
+          if [ "$SIGN" = true ]; then
+            # the env: prefix keeps the passwords off the command line
+            args+=(
+              -p:AndroidKeyStore=true
+              "-p:AndroidSigningKeyStore=$RUNNER_TEMP/release.keystore"
+              "-p:AndroidSigningKeyAlias=$ANDROID_KEY_ALIAS"
+              -p:AndroidSigningStorePass=env:ANDROID_STORE_PASSWORD
+              -p:AndroidSigningKeyPass=env:ANDROID_KEY_PASSWORD
+            )
+          fi
+          # %3B is an escaped semicolon, which MSBuild would otherwise split on
+          dotnet publish "$PROJECT" --configuration "$CONFIGURATION" --output "$RUNNER_TEMP/out" \
+            '-p:AndroidPackageFormats=aab%3Bapk' \
+            "-p:Version=$VERSION" \
+            "-p:ApplicationDisplayVersion=$DISPLAY_VERSION" \
+            "-p:ApplicationVersion=$VERSION_CODE" \
+            "${args[@]}"
+
+      - name: Collect outputs
+        env:
+          OUTPUT_NAME: ${{ inputs.package_name }}-${{ steps.version.outputs.display }}-android
+        run: |
+          mkdir -p "$RUNNER_TEMP/dist"
+          for format in apk aab; do
+            mapfile -t found < <(find "$RUNNER_TEMP/out" -maxdepth 1 -name "*-Signed.$format")
+            [ "${#found[@]}" -eq 1 ] || { echo "::error::Expected one signed $format, found ${#found[@]}"; exit 1; }
+            cp "${found[0]}" "$RUNNER_TEMP/dist/$OUTPUT_NAME.$format"
+          done
+
+      - name: Check signing key
+        if: inputs.sign
+        env:
+          OUTPUT_NAME: ${{ inputs.package_name }}-${{ steps.version.outputs.display }}-android
+        run: |
+          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)"
+          [ -n "$apksigner" ] || { echo "::error::apksigner not found"; exit 1; }
+          certs="$("$apksigner" verify --print-certs "$RUNNER_TEMP/dist/$OUTPUT_NAME.apk")"
+          grep -F 'certificate SHA-256 digest' <<<"$certs" \
+            || { echo "::error::Could not read the APK's signing certificate"; exit 1; }
+          if grep -q 'CN=Android Debug' <<<"$certs"; then
+            echo "::error::The APK is signed with a debug key"
+            exit 1
+          fi
+
+      - name: Remove keystore
+        if: always() && inputs.sign
+        run: rm -f "$RUNNER_TEMP/release.keystore"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-apk
+          path: ${{ runner.temp }}/dist/*.apk
+          if-no-files-found: error
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-aab
+          path: ${{ runner.temp }}/dist/*.aab
+          if-no-files-found: error

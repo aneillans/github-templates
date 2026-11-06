@@ -11,6 +11,11 @@ on:
         required: false
         type: string
         default: "10.0.x"
+      global_json_file:
+        description: Path to a global.json; takes the SDK version from it instead of dotnet_version
+        required: false
+        type: string
+        default: ""
       configuration:
         required: false
         type: string
@@ -23,6 +28,37 @@ on:
         required: false
         type: boolean
         default: true
+      test_projects:
+        description: |
+          Test projects, one per line, run with `dotnet test --project` for Microsoft.Testing.Platform repos.
+          Replaces the VSTest run of `project`, so no TRX results are produced or published.
+        required: false
+        type: string
+        default: ""
+      verify_format:
+        description: Fail when `dotnet format` would change anything at warning severity or above
+        required: false
+        type: boolean
+        default: false
+      audit_vulnerable:
+        description: Fail when `project` has a vulnerable direct or transitive package
+        required: false
+        type: boolean
+        default: false
+      upload_artifact_name:
+        description: Name for an extra artifact uploaded even when tests fail, e.g. UI test screenshots
+        required: false
+        type: string
+        default: ""
+      upload_artifact_path:
+        required: false
+        type: string
+        default: ""
+      harden_runner:
+        description: Run step-security/harden-runner in audit mode
+        required: false
+        type: boolean
+        default: false
       env_secrets:
         description: |
           Newline-separated secrets to export as environment variables for restore/build/test,
@@ -50,14 +86,26 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
     steps:
+      - name: Harden runner
+        if: inputs.harden_runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Setup .NET
         uses: aneillans/github-templates/actions/setup-dotnet-cache@v1
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
+          global-json-file: ${{ inputs.global_json_file }}
 
       - name: Export secrets as environment variables
         if: inputs.env_secrets != ''
@@ -72,19 +120,59 @@ jobs:
       - name: Build
         run: dotnet build ${{ inputs.project }} --configuration ${{ inputs.configuration }} --no-restore
 
+      - name: Check format
+        if: inputs.verify_format
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: dotnet format "$PROJECT" --no-restore --verify-no-changes --severity warn
+
       - name: Run tests
-        if: inputs.run_tests
+        if: inputs.run_tests && inputs.test_projects == ''
         run: dotnet test ${{ inputs.project }} --configuration ${{ inputs.configuration }} --no-build --logger "trx;LogFileName=test-results.trx"
 
+      - name: Run test projects
+        if: inputs.run_tests && inputs.test_projects != ''
+        env:
+          TEST_PROJECTS: ${{ inputs.test_projects }}
+          CONFIGURATION: ${{ inputs.configuration }}
+        run: |
+          # run them all, so one failure doesn't hide another
+          failed=0
+          while IFS= read -r test_project; do
+            test_project="$(printf '%s' "$test_project" | tr -d '[:space:]')"
+            [ -n "$test_project" ] || continue
+            dotnet test --project "$test_project" --configuration "$CONFIGURATION" --no-build || failed=1
+          done <<<"$TEST_PROJECTS"
+          exit "$failed"
+
       - name: Publish test results
-        if: ${{ always() && inputs.run_tests && inputs.publish_test_results }}
+        if: ${{ always() && inputs.run_tests && inputs.test_projects == '' && inputs.publish_test_results }}
         uses: EnricoMi/publish-unit-test-result-action@v2
         with:
           files: '**/TestResults/*.trx'
 
       - name: Upload TRX results artifact
-        if: ${{ inputs.run_tests && github.event_name != 'pull_request' }}
+        if: ${{ inputs.run_tests && inputs.test_projects == '' && github.event_name != 'pull_request' }}
         uses: actions/upload-artifact@v7
         with:
           name: test-results-trx
           path: '**/TestResults/*.trx'
+
+      - name: Upload extra artifact
+        if: ${{ always() && inputs.upload_artifact_name != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.upload_artifact_name }}
+          path: ${{ inputs.upload_artifact_path }}
+          if-no-files-found: ignore
+
+      - name: Audit vulnerable packages
+        if: inputs.audit_vulnerable
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: |
+          dotnet list "$PROJECT" package --vulnerable --include-transitive 2>&1 | tee "$RUNNER_TEMP/audit.txt"
+          if grep -q "has the following vulnerable packages" "$RUNNER_TEMP/audit.txt"; then
+            echo "::error::Vulnerable packages found"
+            exit 1
+          fi
