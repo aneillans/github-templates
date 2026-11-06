@@ -2,6 +2,8 @@ name: Release Cut (reusable)
 
 # Creates or re-cuts a draft release: tag, generated notes, images built at the tag, deploy zip.
 # Never deploys. Deploy the tag to dev, validate, then run release-publish.
+# Leave images, bundle_paths, charts and release_env empty for a release with no images or zip, such
+# as a desktop app whose build attaches its own files with release-upload-assets.
 
 on:
   workflow_call:
@@ -23,12 +25,14 @@ on:
         default: false
       images:
         description: Image references without a tag, one per line; recorded by digest in the zip
-        required: true
+        required: false
         type: string
+        default: ""
       bundle_paths:
         description: Files or directories to copy into the zip, one per line. Listed explicitly so env files stay out
-        required: true
+        required: false
         type: string
+        default: ""
       charts:
         description: Chart directories to package into the zip, one per line, stamped with the version and tag
         required: false
@@ -187,7 +191,8 @@ jobs:
           ref: ${{ steps.final.outputs.tag }}
           workflow: ${{ inputs.build_workflow }}
 
-      - uses: docker/login-action@v4
+      - if: inputs.images != ''
+        uses: docker/login-action@v4
         with:
           registry: ${{ inputs.registry }}
           username: ${{ inputs.registry_username }}
@@ -199,6 +204,7 @@ jobs:
           version: ${{ inputs.helm_version }}
 
       - name: Package and attach deploy zip
+        if: inputs.images != '' || inputs.bundle_paths != '' || inputs.charts != '' || inputs.release_env != ''
         env:
           TAG: ${{ steps.final.outputs.tag }}
           VERSION: ${{ steps.final.outputs.version }}
@@ -243,4 +249,4 @@ jobs:
         env:
           TAG: ${{ steps.final.outputs.tag }}
           SHA: ${{ steps.target.outputs.sha }}
-        run: echo "Draft release $TAG is ready at $SHA. Deploy $TAG to development, validate, then run Publish Release." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "Draft release $TAG is ready at $SHA. Validate it, then run Publish Release." >> "$GITHUB_STEP_SUMMARY"

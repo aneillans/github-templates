@@ -1,0 +1,56 @@
+name: Release Upload Assets (reusable)
+
+# Attaches build artifacts to a draft release from release-cut. Refuses a published release, so a
+# rerun can't change files people have already downloaded. Re-cut with force to rebuild one.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag of the draft release
+        required: true
+        type: string
+      artifact_pattern:
+        description: Glob of artifact names from this run to attach, e.g. appimage-*
+        required: true
+        type: string
+      harden_runner:
+        description: Run step-security/harden-runner in audit mode
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Harden runner
+        if: inputs.harden_runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ inputs.artifact_pattern }}
+          path: ${{ runner.temp }}/assets
+          merge-multiple: true
+
+      - name: Upload to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          is_draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" \
+            || { echo "::error::No release for $TAG; run the release cut first"; exit 1; }
+          [ "$is_draft" = true ] || { echo "::error::$TAG is already published"; exit 1; }
+
+          mapfile -d '' files < <(find "$RUNNER_TEMP/assets" -type f -print0)
+          [ "${#files[@]}" -gt 0 ] || { echo "::error::No artifacts matched"; exit 1; }
+          gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber

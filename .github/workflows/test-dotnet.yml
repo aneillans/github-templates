@@ -7,6 +7,8 @@ on:
       - ".github/workflows/test-dotnet.yml"
       - "actions/setup-dotnet-cache/**"
       - "tests/dotnet/**"
+      - "tests/dotnet-appimage/**"
+      - "tests/dotnet-android/**"
   push:
     branches:
       - main
@@ -15,6 +17,8 @@ on:
       - ".github/workflows/test-dotnet.yml"
       - "actions/setup-dotnet-cache/**"
       - "tests/dotnet/**"
+      - "tests/dotnet-appimage/**"
+      - "tests/dotnet-android/**"
   workflow_dispatch:
 
 permissions:
@@ -37,3 +41,31 @@ jobs:
       project: tests/dotnet/src/TemplateTest/TemplateTest.csproj
       package_version: 0.0.0-ci.${{ github.run_number }}
       artifact_name: test-dotnet-nupkg
+
+  appimage:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runtime: linux-x64, runner: ubuntu-24.04 }
+          - { runtime: linux-arm64, runner: ubuntu-24.04-arm }
+    uses: ./.github/workflows/dotnet-appimage.yml
+    with:
+      working_directory: tests/dotnet-appimage
+      project: TemplateTestApp.csproj
+      runtime: ${{ matrix.runtime }}
+      runner: ${{ matrix.runner }}
+      # same shape as next-version's stamp output
+      version: 0.0.1+${{ github.run_number }}
+      pack_id: test.templates.app
+      main_exe: TemplateTestApp
+      tarball: true
+      max_size_mb: 60
+
+  android:
+    uses: ./.github/workflows/dotnet-android.yml
+    with:
+      project: tests/dotnet-android/TemplateTestAndroid.csproj
+      version: 0.0.1+${{ github.run_number }}
+      version_code: ${{ github.run_number }}
+      package_name: TemplateTest
