@@ -64,6 +64,11 @@ on:
         required: false
         type: string
         default: "5m"
+      harden_runner:
+        description: Run step-security/harden-runner in audit mode
+        required: false
+        type: boolean
+        default: true
     secrets:
       secrets_json:
         description: |
@@ -79,6 +84,12 @@ jobs:
     runs-on: ${{ inputs.runs_on }}
     environment: ${{ inputs.environment }}
     steps:
+      - name: Harden runner
+        if: inputs.harden_runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - uses: aneillans/github-templates/actions/helm-deploy@v1
         with:
           chart: ${{ inputs.chart }}

@@ -64,6 +64,11 @@ on:
         required: false
         type: string
         default: "v3.16.4"
+      harden_runner:
+        description: Run step-security/harden-runner in audit mode
+        required: false
+        type: boolean
+        default: true
     outputs:
       tag:
         value: ${{ jobs.cut.outputs.tag }}
@@ -85,6 +90,12 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Harden runner
+        if: inputs.harden_runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0

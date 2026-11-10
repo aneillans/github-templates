@@ -61,7 +61,7 @@ on:
         description: Run step-security/harden-runner in audit mode
         required: false
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read

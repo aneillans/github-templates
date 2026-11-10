@@ -32,6 +32,11 @@ on:
         required: false
         type: string
         default: "v"
+      harden_runner:
+        description: Run step-security/harden-runner in audit mode
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   publish:
@@ -43,6 +48,12 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Harden runner
+        if: inputs.harden_runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - if: inputs.images != ''
         uses: docker/login-action@v4
         with:
