@@ -20,6 +20,11 @@ on:
         description: GitHub Environment to run under (for environment-scoped secrets)
         required: false
         type: string
+      harden_runner:
+        description: Run step-security/harden-runner in audit mode
+        required: false
+        type: boolean
+        default: true
     secrets:
       cloudflare_api_token:
         required: true
@@ -38,6 +43,12 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working_directory }}
     steps:
+      - name: Harden runner
+        if: inputs.harden_runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - name: Checkout
         uses: actions/checkout@v7
 

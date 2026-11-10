@@ -27,6 +27,11 @@ on:
         required: false
         type: string
         default: "npm test"
+      harden_runner:
+        description: Run step-security/harden-runner in audit mode
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -39,6 +44,12 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working_directory }}
     steps:
+      - name: Harden runner
+        if: inputs.harden_runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - name: Checkout
         uses: actions/checkout@v7
 

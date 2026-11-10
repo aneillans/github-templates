@@ -75,6 +75,11 @@ on:
         required: false
         type: string
         default: "ubuntu-24.04-arm"
+      harden_runner:
+        description: Run step-security/harden-runner in audit mode
+        required: false
+        type: boolean
+        default: true
     secrets:
       registry_password:
         description: Required unless push is false
@@ -101,6 +106,12 @@ jobs:
       digest: ${{ steps.build.outputs.digest }}
       tags: ${{ steps.meta.outputs.tags }}
     steps:
+      - name: Harden runner
+        if: inputs.harden_runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@v7
 
@@ -167,6 +178,12 @@ jobs:
       labels: ${{ steps.meta.outputs.labels }}
       metadata_json: ${{ steps.meta.outputs.json }}
     steps:
+      - name: Harden runner
+        if: inputs.harden_runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - name: Generate Docker metadata
         id: meta
         uses: docker/metadata-action@v6
@@ -211,6 +228,12 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     steps:
+      - name: Harden runner
+        if: inputs.harden_runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@v7
 
@@ -274,6 +297,12 @@ jobs:
     outputs:
       digest: ${{ steps.inspect.outputs.digest }}
     steps:
+      - name: Harden runner
+        if: inputs.harden_runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - name: Download digests
         uses: actions/download-artifact@v8
         with:

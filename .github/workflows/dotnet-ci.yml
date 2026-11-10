@@ -58,7 +58,7 @@ on:
         description: Run step-security/harden-runner in audit mode
         required: false
         type: boolean
-        default: false
+        default: true
       env_secrets:
         description: |
           Newline-separated secrets to export as environment variables for restore/build/test,
