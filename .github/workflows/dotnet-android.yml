@@ -161,8 +161,10 @@ jobs:
               -p:AndroidSigningKeyPass=env:ANDROID_KEY_PASSWORD
             )
           fi
-          # %3B is an escaped semicolon, which MSBuild would otherwise split on
-          dotnet publish "$PROJECT" --configuration "$CONFIGURATION" --output "$RUNNER_TEMP/out" \
+          # %3B is an escaped semicolon, which MSBuild would otherwise split on.
+          # No --output: publish copies only the AndroidPackageFormat (aab) there, while both
+          # signed packages land in the build output, which Collect outputs reads.
+          dotnet publish "$PROJECT" --configuration "$CONFIGURATION" \
             '-p:AndroidPackageFormats=aab%3Bapk' \
             "-p:Version=$VERSION" \
             "-p:ApplicationDisplayVersion=$DISPLAY_VERSION" \
@@ -172,11 +174,20 @@ jobs:
       - name: Collect outputs
         env:
           OUTPUT_NAME: ${{ inputs.package_name }}-${{ steps.version.outputs.display }}-android
+          PROJECT: ${{ inputs.project }}
+          CONFIGURATION: ${{ inputs.configuration }}
         run: |
           mkdir -p "$RUNNER_TEMP/dist"
+          # bin/<configuration>/<tfm>/, or <tfm>/<rid>/ when the project sets a RuntimeIdentifier
+          project_bin="$(dirname "$PROJECT")/bin/$CONFIGURATION"
           for format in apk aab; do
-            mapfile -t found < <(find "$RUNNER_TEMP/out" -maxdepth 1 -name "*-Signed.$format")
-            [ "${#found[@]}" -eq 1 ] || { echo "::error::Expected one signed $format, found ${#found[@]}"; exit 1; }
+            mapfile -t found < <(find "$project_bin" -maxdepth 3 -name "*-Signed.$format" -not -path '*/publish/*' 2>/dev/null)
+            if [ "${#found[@]}" -ne 1 ]; then
+              echo "::error::Expected one signed $format under $project_bin, found ${#found[@]}"
+              echo "Packages on disk:"
+              find "$(dirname "$PROJECT")" \( -name '*.apk' -o -name '*.aab' \) -print 2>/dev/null || true
+              exit 1
+            fi
             cp "${found[0]}" "$RUNNER_TEMP/dist/$OUTPUT_NAME.$format"
           done
 
