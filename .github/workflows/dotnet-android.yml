@@ -12,7 +12,7 @@ on:
   workflow_call:
     inputs:
       project:
-        description: csproj to publish
+        description: csproj to publish, or its directory
         required: true
         type: string
       version:
@@ -178,14 +178,17 @@ jobs:
           CONFIGURATION: ${{ inputs.configuration }}
         run: |
           mkdir -p "$RUNNER_TEMP/dist"
+          # project may be a csproj or its directory, as dotnet publish accepts either
+          project_dir="$PROJECT"
+          [ -d "$project_dir" ] || project_dir="$(dirname "$PROJECT")"
           # bin/<configuration>/<tfm>/, or <tfm>/<rid>/ when the project sets a RuntimeIdentifier
-          project_bin="$(dirname "$PROJECT")/bin/$CONFIGURATION"
+          project_bin="$project_dir/bin/$CONFIGURATION"
           for format in apk aab; do
             mapfile -t found < <(find "$project_bin" -maxdepth 3 -name "*-Signed.$format" -not -path '*/publish/*' 2>/dev/null)
             if [ "${#found[@]}" -ne 1 ]; then
               echo "::error::Expected one signed $format under $project_bin, found ${#found[@]}"
               echo "Packages on disk:"
-              find "$(dirname "$PROJECT")" \( -name '*.apk' -o -name '*.aab' \) -print 2>/dev/null || true
+              find "$project_dir" \( -name '*.apk' -o -name '*.aab' \) -print 2>/dev/null || true
               exit 1
             fi
             cp "${found[0]}" "$RUNNER_TEMP/dist/$OUTPUT_NAME.$format"

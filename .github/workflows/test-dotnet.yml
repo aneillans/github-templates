@@ -84,7 +84,8 @@ jobs:
   android:
     uses: ./.github/workflows/dotnet-android.yml
     with:
-      project: tests/dotnet-android/TemplateTestAndroid.csproj
+      # a directory, the form dotnet publish also takes; the csproj form passed in #12
+      project: tests/dotnet-android
       version: 0.0.1+${{ github.run_number }}
       version_code: ${{ github.run_number }}
       package_name: TemplateTest
