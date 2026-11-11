@@ -20,9 +20,10 @@ on:
         required: true
         type: string
       version_code:
-        description: Android versionCode. Must rise with every store upload; github.run_number does, unless the workflow file is renamed
+        # string, as github.run_number is a string and a number input rejects it
+        description: Android versionCode, a positive integer. Must rise with every store upload; github.run_number does, unless the workflow file is renamed
         required: true
-        type: number
+        type: string
       package_name:
         description: Starts the output file names, e.g. MyApp gives MyApp-1.5.0-android.apk
         required: true
@@ -111,10 +112,14 @@ jobs:
         id: version
         env:
           VERSION: ${{ inputs.version }}
+          VERSION_CODE: ${{ inputs.version_code }}
         run: |
           version="${VERSION#v}"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] \
             || { echo "::error::Not a semver version: '$VERSION'"; exit 1; }
+          # Google Play caps versionCode at 2100000000
+          [[ "$VERSION_CODE" =~ ^[1-9][0-9]{0,9}$ ]] && (( VERSION_CODE <= 2100000000 )) \
+            || { echo "::error::version_code must be an integer from 1 to 2100000000: '$VERSION_CODE'"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "display=${version%%+*}" >> "$GITHUB_OUTPUT"
 
