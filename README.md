@@ -34,6 +34,7 @@ one-line diff in the calling repo; github-templates never changes.
   dotnet-pack.yml               pack to nupkg, one csproj
   dotnet-nuget-publish.yml      push downloaded nupkgs to a feed
   dotnet-appimage.yml           publish + Velopack AppImage, one project, one runtime
+  dotnet-windows.yml            publish + Velopack Setup.exe and portable zip, unsigned, one runtime
   dotnet-android.yml            publish APK + AAB, optionally signed, one project
   release-upload-assets.yml     attach build artifacts to a draft release
   cloudflare-worker-deploy.yml  wrangler deploy, one target
@@ -50,7 +51,7 @@ tests/
   node-app/      HTTP server with node:test tests and a Dockerfile
   node-worker/   minimal Cloudflare Worker
   dotnet/        class library + xUnit tests, packable
-  dotnet-appimage/  console app + vpk tool manifest, packed to an AppImage
+  dotnet-appimage/  console app + vpk tool manifest, packed to an AppImage and a Windows installer
   dotnet-android/   minimal Android app, built unsigned
 ```
 
@@ -73,9 +74,9 @@ uses it by local path.
 - Helm, resolve-deploy, build-and-wait, release-cut, release-publish: no
   self-test; they need a cluster, a registry holding SHA-tagged images, or
   write access to create releases.
-- .NET: build, test and pack, plus an AppImage for x64 and arm64 and a
-  debug-signed Android build. Nothing is published. Signing has no self-test,
-  because it needs a keystore.
+- .NET: build, test and pack, plus an AppImage and a Windows installer for
+  x64 and arm64, and a debug-signed Android build. Nothing is published.
+  Signing has no self-test, because it needs a keystore.
 - release-upload-assets: no self-test, for the same reason as release-cut.
 
 ## Build and deploy conventions
@@ -210,10 +211,14 @@ jobs:
       artifact_pattern: appimage-*
 ```
 
+dotnet-windows takes the same inputs, minus `categories` and `tarball`, and
+uploads `windows-<runtime>` holding `<pack_id>-<version>-<runtime>-Setup.exe`,
+a matching `-Portable.zip`, and the Velopack update feed.
+
 Pass release-publish `required_assets` with a suffix per expected file, such as
-`linux-x64.AppImage`, because its default expects a deploy zip. Callers still
-grant the permissions listed above: a template's job can't start if it asks for
-more than its caller gives.
+`linux-x64.AppImage` or `win-x64-Setup.exe`, because its default expects a
+deploy zip. Callers still grant the permissions listed above: a template's job
+can't start if it asks for more than its caller gives.
 
 Keep one `build.yml` for all platforms, as release-cut dispatches a single
 workflow. The release job then needs every platform's job, so a failure on one
