@@ -1,0 +1,180 @@
+name: .NET Windows installer (reusable)
+
+# Publishes one project for one runtime and packs it with Velopack into a Setup.exe and a portable
+# zip, uploaded as the artifact windows-<runtime>. Unsigned. Read-only: release-upload-assets
+# attaches the result to a release. The caller's dotnet-tools.json must pin vpk.
+# No Harden-Runner: its Windows agent isn't available on the community tier.
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: csproj to publish, relative to working_directory
+        required: true
+        type: string
+      runtime:
+        description: Runtime identifier, win-x64 or win-arm64. Also the Velopack channel, so each architecture keeps its own update feed
+        required: true
+        type: string
+      version:
+        description: Package version, at least 0.0.1 (vpk's minimum), such as next-version's stamp output; a leading v is stripped
+        required: true
+        type: string
+      pack_id:
+        description: Velopack package id, which starts every file name, e.g. MyApp. Changing it after release breaks updates for existing installs
+        required: true
+        type: string
+      main_exe:
+        description: File name of the entry executable; .exe is added if missing
+        required: true
+        type: string
+      runner:
+        description: Must match the runtime's architecture, e.g. windows-2025 for win-x64, windows-11-arm for win-arm64
+        required: false
+        type: string
+        default: windows-latest
+      title:
+        required: false
+        type: string
+        default: ""
+      authors:
+        required: false
+        type: string
+        default: ""
+      icon:
+        description: .ico file, relative to working_directory
+        required: false
+        type: string
+        default: ""
+      exclude:
+        description: Regex of files left out of the package
+        required: false
+        type: string
+        default: '.*\.(pdb|dbg)'
+      max_size_mb:
+        description: Fail if the published files, minus debug symbols, exceed this size. 0 disables the check
+        required: false
+        type: number
+        default: 0
+      dotnet_version:
+        required: false
+        type: string
+        default: "10.0.x"
+      global_json_file:
+        description: Path to a global.json, relative to the repo root; takes the SDK version from it instead of dotnet_version
+        required: false
+        type: string
+        default: ""
+      configuration:
+        required: false
+        type: string
+        default: "Release"
+      working_directory:
+        required: false
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows ${{ inputs.runtime }}
+    runs-on: ${{ inputs.runner }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      PROJECT: ${{ inputs.project }}
+      RUNTIME: ${{ inputs.runtime }}
+      CONFIGURATION: ${{ inputs.configuration }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: aneillans/github-templates/actions/setup-dotnet-cache@v1
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+          global-json-file: ${{ inputs.global_json_file }}
+
+      - name: Check version
+        id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          version="${VERSION#v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] \
+            || { echo "::error::Not a semver version: '$VERSION'"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "display=${version%%+*}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore
+        run: dotnet restore "$PROJECT"
+
+      - name: Publish
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          dotnet publish "$PROJECT" --configuration "$CONFIGURATION" --runtime "$RUNTIME" --no-restore \
+            -p:Version="$VERSION" --output "$RUNNER_TEMP/publish"
+
+      - name: Check size
+        if: inputs.max_size_mb > 0
+        env:
+          MAX_SIZE_MB: ${{ inputs.max_size_mb }}
+        run: |
+          size="$(du -sb --exclude='*.dbg' --exclude='*.pdb' "$RUNNER_TEMP/publish" | cut -f1)"
+          echo "Shipped size: $((size / 1024 / 1024)) MiB"
+          test "$size" -lt "$((MAX_SIZE_MB * 1024 * 1024))"
+
+      - name: Restore tools
+        run: dotnet tool restore
+
+      - name: Pack installer
+        env:
+          # vpk targets net10.0; this lets it run where only a newer runtime is installed
+          DOTNET_ROLL_FORWARD: Major
+          VERSION: ${{ steps.version.outputs.version }}
+          DISPLAY_VERSION: ${{ steps.version.outputs.display }}
+          PACK_ID: ${{ inputs.pack_id }}
+          MAIN_EXE: ${{ inputs.main_exe }}
+          TITLE: ${{ inputs.title }}
+          AUTHORS: ${{ inputs.authors }}
+          ICON: ${{ inputs.icon }}
+          EXCLUDE: ${{ inputs.exclude }}
+        run: |
+          [[ "$MAIN_EXE" == *.exe ]] || MAIN_EXE="$MAIN_EXE.exe"
+          args=()
+          [ -n "$TITLE" ] && args+=(--packTitle "$TITLE")
+          [ -n "$AUTHORS" ] && args+=(--packAuthors "$AUTHORS")
+          [ -n "$ICON" ] && args+=(--icon "$ICON")
+          dotnet vpk pack \
+            --packId "$PACK_ID" \
+            --packVersion "$VERSION" \
+            --packDir "$RUNNER_TEMP/publish" \
+            --mainExe "$MAIN_EXE" \
+            --runtime "$RUNTIME" \
+            --channel "$RUNTIME" \
+            --exclude "$EXCLUDE" \
+            --outputDir "$RUNNER_TEMP/release" \
+            "${args[@]}"
+          # local bookkeeping for vpk; `vpk upload` doesn't publish it either
+          rm -f "$RUNNER_TEMP"/release/assets.*.json
+          # vpk leaves the version out of these names, and the update feed doesn't reference them
+          for kind in Setup.exe Portable.zip; do
+            mv "$RUNNER_TEMP/release/$PACK_ID-$RUNTIME-$kind" "$RUNNER_TEMP/release/$PACK_ID-$DISPLAY_VERSION-$RUNTIME-$kind"
+          done
+          ls -l "$RUNNER_TEMP/release"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-${{ inputs.runtime }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error

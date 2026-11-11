@@ -62,6 +62,25 @@ jobs:
       tarball: true
       max_size_mb: 60
 
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runtime: win-x64, runner: windows-2025 }
+          - { runtime: win-arm64, runner: windows-11-arm }
+    uses: ./.github/workflows/dotnet-windows.yml
+    with:
+      # same console app as the AppImage test
+      working_directory: tests/dotnet-appimage
+      project: TemplateTestApp.csproj
+      runtime: ${{ matrix.runtime }}
+      runner: ${{ matrix.runner }}
+      version: 0.0.1+${{ github.run_number }}
+      pack_id: test.templates.app
+      main_exe: TemplateTestApp
+      max_size_mb: 60
+
   android:
     uses: ./.github/workflows/dotnet-android.yml
     with:
