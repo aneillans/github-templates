@@ -50,7 +50,7 @@ on:
         type: string
         default: "10.0.x"
       global_json_file:
-        description: Path to a global.json; takes the SDK version from it instead of dotnet_version
+        description: Path to a global.json; takes the SDK version from it instead of dotnet_version. Empty uses the repo root's global.json if there is one
         required: false
         type: string
         default: ""

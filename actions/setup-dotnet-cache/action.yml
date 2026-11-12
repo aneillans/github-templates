@@ -6,17 +6,27 @@ inputs:
     required: false
     default: "10.0.x"
   global-json-file:
-    description: Path to a global.json; takes the SDK version from it instead of dotnet-version
+    description: Path to a global.json; takes the SDK version from it instead of dotnet-version. Empty uses ./global.json if there is one
     required: false
     default: ""
 
 runs:
   using: composite
   steps:
+    - id: sdk
+      shell: bash
+      env:
+        GLOBAL_JSON_FILE: ${{ inputs.global-json-file }}
+      run: |
+        # a repo that pins its SDK shouldn't have to say so in every caller
+        file="$GLOBAL_JSON_FILE"
+        [ -z "$file" ] && [ -f "$GITHUB_WORKSPACE/global.json" ] && file=global.json
+        echo "global-json-file=$file" >> "$GITHUB_OUTPUT"
+
     - uses: actions/setup-dotnet@v6
       with:
-        dotnet-version: ${{ inputs.global-json-file == '' && inputs.dotnet-version || '' }}
-        global-json-file: ${{ inputs.global-json-file }}
+        dotnet-version: ${{ steps.sdk.outputs.global-json-file == '' && inputs.dotnet-version || '' }}
+        global-json-file: ${{ steps.sdk.outputs.global-json-file }}
 
     - uses: actions/cache@v6
       with:
