@@ -35,6 +35,7 @@ one-line diff in the calling repo; github-templates never changes.
   dotnet-nuget-publish.yml      push downloaded nupkgs to a feed
   dotnet-appimage.yml           publish + Velopack AppImage, one project, one runtime
   dotnet-windows.yml            publish + Velopack Setup.exe and portable zip, unsigned, one runtime
+  dotnet-macos.yml              publish + Velopack .app as Setup.pkg and portable zip, ad-hoc signed, one runtime
   dotnet-android.yml            publish APK + AAB, optionally signed, one project
   release-upload-assets.yml     attach build artifacts to a draft release
   cloudflare-worker-deploy.yml  wrangler deploy, one target
@@ -51,7 +52,7 @@ tests/
   node-app/      HTTP server with node:test tests and a Dockerfile
   node-worker/   minimal Cloudflare Worker
   dotnet/        class library + xUnit tests, packable
-  dotnet-appimage/  console app + vpk tool manifest, packed to an AppImage and a Windows installer
+  dotnet-appimage/  console app + vpk tool manifest, packed to an AppImage, a Windows installer and a macOS app
   dotnet-android/   minimal Android app, built unsigned
 ```
 
@@ -74,8 +75,8 @@ uses it by local path.
 - Helm, resolve-deploy, build-and-wait, release-cut, release-publish: no
   self-test; they need a cluster, a registry holding SHA-tagged images, or
   write access to create releases.
-- .NET: build, test and pack, plus an AppImage and a Windows installer for
-  x64 and arm64, and a debug-signed Android build. Nothing is published.
+- .NET: build, test and pack, plus an AppImage, a Windows installer and a
+  macOS app for x64 and arm64, and a debug-signed Android build. Nothing is published.
   Signing has no self-test, because it needs a keystore.
 - release-upload-assets: no self-test, for the same reason as release-cut.
 
@@ -215,15 +216,25 @@ dotnet-windows takes the same inputs, minus `categories` and `tarball`, and
 uploads `windows-<runtime>` holding `<pack_id>-<version>-<runtime>-Setup.exe`,
 a matching `-Portable.zip`, and the Velopack update feed.
 
+dotnet-macos takes the same inputs as dotnet-windows, plus `bundle_id` and
+`entitlements`, and expects an `.icns` icon. It uploads `macos-<runtime>`
+holding `<pack_id>-<version>-<runtime>-Setup.pkg`, a matching `-Portable.zip`,
+and the Velopack update feed. The app is ad-hoc signed and not notarized, so
+users clear quarantine (`xattr -dr com.apple.quarantine`) or allow it in
+System Settings before the first launch.
+
 Pass release-publish `required_assets` with a suffix per expected file, such as
-`linux-x64.AppImage` or `win-x64-Setup.exe`, because its default expects a
+`linux-x64.AppImage`, `win-x64-Setup.exe` or `osx-arm64-Setup.pkg`, because its default expects a
 deploy zip. Callers still grant the permissions listed above: a template's job
 can't start if it asks for more than its caller gives.
 
 Keep one `build.yml` for all platforms, as release-cut dispatches a single
 workflow. The release job then needs every platform's job, so a failure on one
-leaves nothing half-attached. To attach several sets of artifacts, run
-release-upload-assets over a matrix of `artifact_pattern` values.
+leaves nothing half-attached. To attach several sets of artifacts, give
+release-upload-assets one `artifact_pattern` per line.
+
+The .NET templates take the SDK version from the repo root's `global.json`
+when there is one, so `global_json_file` is only needed for one elsewhere.
 
 ### Android signing
 

@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       artifact_pattern:
-        description: Glob of artifact names from this run to attach, e.g. appimage-*
+        description: Globs of artifact names from this run to attach, one per line, e.g. appimage-*
         required: true
         type: string
       harden_runner:
@@ -35,12 +35,32 @@ jobs:
         with:
           egress-policy: audit
 
+      # download-artifact takes one pattern, so fetch everything, one directory per artifact, and filter
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: ${{ inputs.artifact_pattern }}
-          path: ${{ runner.temp }}/assets
-          merge-multiple: true
+          path: ${{ runner.temp }}/artifacts
+
+      - name: Select artifacts
+        env:
+          PATTERNS: ${{ inputs.artifact_pattern }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/assets"
+          while IFS= read -r pattern; do
+            pattern="$(printf '%s' "$pattern" | tr -d '[:space:]')"
+            [ -n "$pattern" ] || continue
+            matched=false
+            for dir in "$RUNNER_TEMP"/artifacts/*/; do
+              name="$(basename "$dir")"
+              # unquoted on purpose: the pattern is a glob
+              # shellcheck disable=SC2053
+              [[ "$name" == $pattern ]] || continue
+              matched=true
+              echo "Attaching $name"
+              find "$dir" -type f -exec cp {} "$RUNNER_TEMP/assets/" \;
+            done
+            [ "$matched" = true ] || { echo "::error::No artifact matched $pattern"; exit 1; }
+          done <<<"$PATTERNS"
 
       - name: Upload to draft release
         env:

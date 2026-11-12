@@ -81,6 +81,26 @@ jobs:
       main_exe: TemplateTestApp
       max_size_mb: 60
 
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runtime: osx-x64, runner: macos-15-intel }
+          - { runtime: osx-arm64, runner: macos-15 }
+    uses: ./.github/workflows/dotnet-macos.yml
+    with:
+      # same console app as the AppImage test
+      working_directory: tests/dotnet-appimage
+      project: TemplateTestApp.csproj
+      runtime: ${{ matrix.runtime }}
+      runner: ${{ matrix.runner }}
+      version: 0.0.1+${{ github.run_number }}
+      pack_id: test.templates.app
+      main_exe: TemplateTestApp
+      bundle_id: test.templates.app
+      max_size_mb: 60
+
   android:
     uses: ./.github/workflows/dotnet-android.yml
     with:
