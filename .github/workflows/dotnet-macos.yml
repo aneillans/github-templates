@@ -53,7 +53,7 @@ on:
         type: string
         default: ""
       entitlements:
-        description: Hardened-runtime entitlements plist, relative to working_directory. Defaults to vpk's, which allow JIT
+        description: Hardened-runtime entitlements plist, relative to working_directory; vpk requires a .entitlements extension. Defaults to vpk's, which allow JIT
         required: false
         type: string
         default: ""

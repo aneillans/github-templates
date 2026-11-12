@@ -99,6 +99,7 @@ jobs:
       pack_id: test.templates.app
       main_exe: TemplateTestApp
       bundle_id: test.templates.app
+      entitlements: TemplateTestApp.entitlements
       max_size_mb: 60
 
   android:
